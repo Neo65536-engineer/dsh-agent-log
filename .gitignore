@@ -1,0 +1,10 @@
+node_modules/
+*.log
+_*.md
+
+# 安装器的备份/自检产物（都是本机运行产生的，不该进仓库）
+.install-backups/
+.checks/
+
+# 打包产物
+*.tgz

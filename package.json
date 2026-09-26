@@ -1,0 +1,92 @@
+{
+  "name": "dsh-agent-worklog",
+  "version": "0.2.0",
+  "description": "Agent 工作记录 / 任务复盘 / 自动生成项目报告：从 DSH 会话日志只读还原这次任务做了什么，并产出可读的《本次 Agent 工作报告》",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "cordis-plugin",
+    "worklog",
+    "report",
+    "session",
+    "retrospective"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wingsky-1/dsh-agent-worklog.git"
+  },
+  "homepage": "https://github.com/wingsky-1/dsh-agent-worklog#readme",
+  "bugs": {
+    "url": "https://github.com/wingsky-1/dsh-agent-worklog/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "plugin": true,
+    "kind": "server",
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  },
+  "disclosure": {
+    "cloud": false,
+    "network": [],
+    "offlineMode": true,
+    "apiKeys": [],
+    "permissions": {
+      "network": "none",
+      "filesystem": "read",
+      "filesystemPaths": [
+        "$DSH_HOME/sessions",
+        "$DSH_HOME/storages/session_projcache"
+      ],
+      "env": []
+    },
+    "jurisdiction": [],
+    "retention": "none"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "core",
+    "bin",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "report": "node bin/worklog.mjs --latest",
+    "list": "node bin/worklog.mjs --list",
+    "daily": "node bin/worklog.mjs --period --since today",
+    "preflight": "node bin/install.mjs",
+    "install": "node bin/install.mjs --apply",
+    "rollback": "node bin/install.mjs --rollback",
+    "compose": "node bin/verify-compose.mjs",
+    "loaded": "node bin/verify-loaded.mjs",
+    "verify": "node test/run-all.mjs",
+    "smoke": "node test/postinstall-smoke.mjs",
+    "check": "node test/run-all.mjs",
+    "pack:check": "pnpm pack --dry-run"
+  }
+}

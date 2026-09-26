@@ -1,0 +1,16 @@
+# 文本文件一律以 LF 存进仓库。
+#
+# 为什么必须显式写：本机（Windows）默认 core.autocrlf 会把源文件写成 CRLF，
+# 而 `test/` 里有多处对**源码文本**做正则断言的检查（例如面板护栏检查
+# `.worklog-body{flex:1 1 auto` 这类片段）。CRLF 不会改变这些断言的结果，
+# 但会让 diff 与 CI（Linux）上的行为不一致 —— 统一为 LF 最省心。
+* text=auto eol=lf
+
+# 二进制/压缩文件不要按文本转换
+*.tgz binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.zstd binary
