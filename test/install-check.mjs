@@ -69,6 +69,12 @@ function makeHome(tag) {
 // 导致真实的 --rollback 失效。（这个缺陷真的发生过。）
 const SANDBOX_BACKUPS = join(sandbox, 'backups')
 
+// 真实备份目录的**测试前快照**：结尾用它证明"没被测试污染"（见文件末尾）。
+// 允许它不存在 —— 幂等安装不建备份，刚装完的检出就是这样。
+const realBackupBefore = existsSync(join(PLUGIN_DIR, '.install-backups'))
+  ? readdirSync(join(PLUGIN_DIR, '.install-backups')).sort()
+  : null
+
 // ================================================================ 形态 A：分发包
 // 把插件目录拷贝一份并**去掉 test/ 与 .git**，模拟"下载解压出来的包"。
 const dl = join(sandbox, 'downloaded-pkg')
@@ -227,7 +233,30 @@ check('没有备份时回滚安全失败', rbNone.code !== 0 || /没有找到任
 // ---------------------------------------------------------------- 清理
 rmSync(sandbox, { recursive: true, force: true })
 check('沙箱已清理', !existsSync(sandbox))
-check('真实备份目录未被测试触碰', existsSync(join(PLUGIN_DIR, '.install-backups')))
+
+/**
+ * 真实备份目录的护栏：**本次测试没有添乱**。
+ *
+ * 早先这里断言的是"真实备份目录存在"——那是错的：
+ * 安装器是幂等的，"配置已是目标状态"时**本来就不建备份**。
+ * 一次刚装完（或从未装过）的检出跑这个测试就必红，而它红的原因跟测试质量毫无关系。
+ * 实测踩过：目录改名后重跑，唯一变红的就是这一条。
+ *
+ * 正确语义是"没被测试污染"，所以比对测试**前后**的快照：
+ * 条目没多也没少。这样无论备份目录存不存在都成立。
+ */
+const realBackupRoot = join(PLUGIN_DIR, '.install-backups')
+const listReal = () => (existsSync(realBackupRoot) ? readdirSync(realBackupRoot).sort() : null)
+const realAfter = listReal()
+const sameAsBefore =
+  realAfter === null
+    ? realBackupBefore === null
+    : realBackupBefore !== null && realAfter.join('|') === realBackupBefore.join('|')
+check(
+  `真实备份目录未被测试触碰${realAfter === null ? '（本机当前没有备份目录，记为未创建）' : ''}`,
+  sameAsBefore,
+  `before=${JSON.stringify(realBackupBefore)} after=${JSON.stringify(realAfter)}`,
+)
 
 console.log(`\n${'='.repeat(46)}`)
 console.log(`通过 ${pass} · 失败 ${fail}`)
