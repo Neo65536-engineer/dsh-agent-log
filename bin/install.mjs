@@ -1,26 +1,38 @@
 #!/usr/bin/env node
 /**
- * dsh-agent-log 安装器 / 回滚器。
+ * dsh-agent-log 安装器 / 回滚器 —— **只在本机、由人显式调用**。
  *
  * 设计原则：**默认只做只读预检，绝不动配置。** 必须显式加 --apply 才写入。
  *
- *   node bin/install.mjs                    只做预检（安全，随时可跑）
- *   node bin/install.mjs --apply            备份 → 改 profile → pnpm install
- *   node bin/install.mjs --rollback         从最近一次备份恢复
- *   node bin/install.mjs --profile web      指定 profile（默认取 DSH_PROFILE）
- *   node bin/install.mjs --apply --file     用 file: 协议安装（下载来的包用这个）
- *   node bin/install.mjs --apply --link     用 link: 协议安装（开发检出用这个）
- *   node bin/install.mjs --source-dir <dir> 插件源目录（默认 = 本文件所在目录的上一级）
+ *   node bin/install.mjs                      只做预检（安全，随时可跑）
+ *   node bin/install.mjs --apply              备份 → 改 profile → pnpm install
+ *   node bin/install.mjs --rollback           从**最早**一次备份恢复
+ *   node bin/install.mjs --home <dir>         指定 DSH home（默认 $DSH_HOME → ~/.dsh）
+ *   node bin/install.mjs --profile <name>     指定 profile（默认自动推断，见「定位」一节）
+ *   node bin/install.mjs --apply --file       强制 file: 协议（下载来的包）
+ *   node bin/install.mjs --apply --link       强制 link: 协议（开发检出）
+ *   node bin/install.mjs --source-dir <dir>   插件源目录（默认 = 本文件所在目录的上一级）
+ *
+ * ⚠️ **绝不要把本脚本挂到 package.json 的 `scripts.install` 上。**
+ *    那是 pnpm/npm 的**生命周期钩子**：任何人把本插件当依赖安装时，它都会在
+ *    **对方机器上**自动执行，而它要写的是"本机的某个 profile"。
+ *    实测踩过：从 GitHub 安装本插件时，这个钩子把作者机器上正在使用的 desktop
+ *    profile 的依赖改指到了一个临时目录 —— 用户完全不知情，而且他自己的目标 profile
+ *    根本没被装上。（另一个后果：脚本一旦非 0 退出，pnpm 会以 ELIFECYCLE 让整个安装失败。）
+ *    入口处现在有守卫：一旦发现自己是被包管理器当生命周期脚本拉起来的，直接退出 0。
  *
  * 不传 --link/--file 时自动判定：有 test/ 或 .git 视为开发检出（link:），
  * 否则视为分发包（file:）。
  *
- * 装完必须重启 DSH（当前会话会中断）。
+ * 装完**不需要**重启 DSH：profile 组合里挂着 HMR，安装会新增 Loader 条目并被热挂载
+ * （客户端面板若没出现，刷新一次页面即可）。改**代码**之后才需要重启 —— 宿主模块
+ * 不会被 HMR 重新 import。
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
+import { homedir } from 'node:os'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const PKG_NAME = 'dsh-agent-log'
@@ -30,6 +42,26 @@ const has = (f) => argv.includes(f)
 const val = (f, d = null) => {
   const i = argv.indexOf(f)
   return i >= 0 && i + 1 < argv.length ? argv[i + 1] : d
+}
+
+// ---------------------------------------------------------------- 生命周期守卫
+//
+// 被 pnpm/npm 当**依赖的生命周期脚本**拉起来时立刻退出：那种上下文里我们既不知道
+// 用户想装哪个 profile，也绝不该动任何配置。（见文件头那段说明。）
+const LIFECYCLE_EVENTS = ['preinstall', 'install', 'postinstall', 'prepare']
+const lifecycleEvent = process.env.npm_lifecycle_event ?? ''
+const underNodeModules = /[\\/]node_modules[\\/]/.test(process.cwd())
+if (
+  LIFECYCLE_EVENTS.includes(lifecycleEvent) &&
+  underNodeModules &&
+  !argv.includes('--i-am-a-dependency-hook')
+) {
+  console.error(
+    `dsh-agent-log: 本脚本被包管理器当作依赖的生命周期脚本执行（npm_lifecycle_event=${lifecycleEvent}，` +
+      `cwd=${process.cwd()}）—— 已跳过安装，没有修改任何配置。\n` +
+      `  要安装本插件，请在目标机器上显式运行：node bin/install.mjs --apply`,
+  )
+  process.exit(0)
 }
 
 /**
@@ -66,12 +98,6 @@ const isDevCheckout =
 
 const MODE = has('--file') ? 'file' : has('--link') ? 'link' : isDevCheckout ? 'link' : 'file'
 
-// 备份目录可覆盖。
-// 默认放在插件目录下。**测试必须传 --backup-dir 指到自己的沙箱**，
-// 否则测试清理时会连带删掉真实安装的备份，导致 --rollback 失效。
-// （这个缺陷真的发生过：跑一次 install-check 就把真实备份删了。）
-const BACKUP_ROOT = val('--backup-dir', join(PLUGIN_DIR, '.install-backups'))
-
 const c = {
   ok: (s) => `\x1b[32m${s}\x1b[0m`,
   bad: (s) => `\x1b[31m${s}\x1b[0m`,
@@ -95,16 +121,94 @@ const warn = (msg, hint) => {
 const ok = (msg) => console.log(`  ${c.ok('✓')} ${msg}`)
 
 // ------------------------------------------------------------------ 定位
+//
+// **这里不允许出现任何机器写死的路径。**
+// 早先的默认值是 `DSH_HOME || 'E:\\tools\\dsh'` 与 `DSH_PROFILE || 'desktop'` ——
+// 作者的机器成了所有机器的默认值：在别的机器上它要么写进一个不存在的目录
+// （预检失败 → 安装失败），要么写进一个与用户实际在跑的无关 profile。
+//
+// 现在的规则与 DSH 自身一致：显式参数 → $DSH_HOME → $DSH_PROFILE_DIR/../.. → ~/.dsh，
+// 并且必须真的是一个 DSH home（含 profiles/ 或 sessions/）。推断不出来就报错，绝不猜。
+function resolveHome(explicit) {
+  const cands = []
+  if (explicit) cands.push({ dir: explicit, from: '--home' })
+  if (process.env.DSH_HOME?.trim()) cands.push({ dir: process.env.DSH_HOME.trim(), from: '$DSH_HOME' })
+  if (process.env.DSH_PROFILE_DIR?.trim()) {
+    cands.push({ dir: resolve(process.env.DSH_PROFILE_DIR.trim(), '..', '..'), from: '$DSH_PROFILE_DIR/../..' })
+  }
+  cands.push({ dir: join(homedir(), '.dsh'), from: '~/.dsh' })
+  for (const cand of cands) {
+    const dir = resolve(cand.dir)
+    if (existsSync(join(dir, 'profiles')) || existsSync(join(dir, 'sessions'))) return { dir, from: cand.from }
+  }
+  return null
+}
+
+/** 列出真正像一个 profile 的目录（有 package.json）。 */
+function listProfiles(home) {
+  const root = join(home, 'profiles')
+  if (!existsSync(root)) return []
+  return readdirSync(root).filter((name) => {
+    try {
+      return statSync(join(root, name)).isDirectory() && existsSync(join(root, name, 'package.json'))
+    } catch {
+      return false
+    }
+  })
+}
+
+/**
+ * profile 推断顺序：显式 → $DSH_PROFILE → 已装着本插件的那个 → 唯一的那个 → desktop。
+ * 一个都不成立时返回 name: null，由预检列出候选 —— 绝不替用户猜一个。
+ */
+function resolveProfile(home, explicit) {
+  if (explicit) return { name: explicit, from: '--profile' }
+  if (process.env.DSH_PROFILE?.trim()) return { name: process.env.DSH_PROFILE.trim(), from: '$DSH_PROFILE' }
+  const names = listProfiles(home)
+  const installed = names.filter((name) => {
+    try {
+      return readFileSync(join(home, 'profiles', name, 'package.json'), 'utf8').includes(`"${PKG_NAME}"`)
+    } catch {
+      return false
+    }
+  })
+  if (installed.length === 1) return { name: installed[0], from: '已装着本插件的那个 profile' }
+  if (names.length === 1) return { name: names[0], from: '唯一的 profile' }
+  if (names.includes('desktop')) return { name: 'desktop', from: '存在 desktop profile' }
+  return { name: null, from: null, candidates: names }
+}
+
 // --home 可指向一个沙箱目录，用于在不碰真实环境的前提下演练安装/回滚。
-const DSH_HOME = val('--home', process.env.DSH_HOME || 'E:\\tools\\dsh')
-const PROFILE = val('--profile', process.env.DSH_PROFILE || 'desktop')
-const PROFILE_DIR = join(DSH_HOME, 'profiles', PROFILE)
+const HOME_RES = resolveHome(val('--home', null))
+const DSH_HOME = HOME_RES?.dir ?? resolve(val('--home', null) ?? process.env.DSH_HOME?.trim() ?? join(homedir(), '.dsh'))
+const PROFILE_RES = resolveProfile(DSH_HOME, val('--profile', null))
+const PROFILE = PROFILE_RES.name
+const PROFILE_DIR = join(DSH_HOME, 'profiles', PROFILE ?? '.unresolved-profile')
 const PROFILE_PKG = join(PROFILE_DIR, 'package.json')
+
+/**
+ * 备份目录**跟随 profile**，不跟随插件目录。
+ *
+ * 早先默认放在插件目录下（`.install-backups`），带来两个真实问题：
+ *   1. `file:` 安装时插件目录位于 `<profile>/node_modules/dsh-agent-log`，
+ *      下一次 `pnpm install` 就可能把整个 node_modules 重建 —— 备份（唯一的
+ *      回滚点）跟着一起消失；
+ *   2. 备份天然属于"它改过的那个 profile"，放在插件目录下就变成了跨 profile 共享，
+ *      于是"跑一次测试把真实安装的备份删了"这种事才可能发生（实测踩过）。
+ * 放进 profile 目录后两者一一对应。测试仍可用 --backup-dir 指到自己的沙箱。
+ */
+const BACKUP_ROOT = val('--backup-dir', join(PROFILE_DIR, '.dsh-agent-log-backups'))
 
 console.log(c.b('dsh-agent-log 安装器'))
 console.log(`  插件目录 : ${PLUGIN_DIR}`)
-console.log(`  DSH home : ${DSH_HOME}`)
-console.log(`  profile  : ${PROFILE}  (${PROFILE_DIR})`)
+console.log(
+  `  DSH home : ${DSH_HOME}` +
+    (HOME_RES ? c.dim(`（来自 ${HOME_RES.from}）`) : c.warn('（没找到，请用 --home 指定）')),
+)
+console.log(
+  `  profile  : ${PROFILE ?? c.bad('(未确定)')}  (${PROFILE_DIR})` +
+    (PROFILE_RES.from ? c.dim(`（来自 ${PROFILE_RES.from}）`) : ''),
+)
 console.log(`  模式     : ${ROLLBACK ? c.warn('回滚') : APPLY ? c.warn('写入') : c.ok('只读预检')}`)
 console.log(
   `  依赖协议 : ${c.b(MODE + ':')} ${
@@ -153,7 +257,7 @@ if (ROLLBACK) {
   rmSync(backupRoot, { recursive: true, force: true })
   console.log(c.dim('已清理备份目录（状态已还原）'))
   console.log('')
-  console.log(c.ok('已回滚。需要重启 DSH 才生效。'))
+  console.log(c.ok('已回滚。刷新一次页面即可（改动 profile 组合会走 HMR）。'))
   process.exit(0)
 }
 
@@ -171,7 +275,17 @@ console.log(c.b('一、插件本体自检'))
  * 而那个缺失跟这次安装是否成功毫无关系。
  */
 const REQUIRED_ALWAYS = ['package.json']
-const REQUIRED_FOR_LINK = ['index.js', 'client.js', 'cordis.patch.yml', 'core/session-log.mjs', 'core/collect.mjs', 'core/render.mjs']
+const REQUIRED_FOR_LINK = [
+  'index.js',
+  'client.js',
+  'cordis.patch.yml',
+  'core/session-log.mjs',
+  'core/collect.mjs',
+  'core/render.mjs',
+  'core/html.mjs',
+  'core/time.mjs',
+]
+
 
 for (const rel of REQUIRED_ALWAYS) {
   if (existsSync(join(PLUGIN_DIR, rel))) ok(`${rel}`)
@@ -232,8 +346,20 @@ try {
 console.log('')
 console.log(c.b('二、目标 profile 自检'))
 
-if (!existsSync(PROFILE_DIR)) {
-  fail(`profile 目录不存在: ${PROFILE_DIR}`, `可用的 profile: ${existsSync(join(DSH_HOME, 'profiles')) ? readdirSync(join(DSH_HOME, 'profiles')).join(', ') : '(无)'}`)
+if (PROFILE === null) {
+  // 推断不出来就说清楚有哪些候选，而不是替用户挑一个（早先这里写死 desktop）。
+  const cands = PROFILE_RES.candidates ?? []
+  fail(
+    '无法确定要安装到哪个 profile',
+    cands.length
+      ? `候选：${cands.join('、')} —— 用 --profile <名字> 指定`
+      : `在 ${join(DSH_HOME, 'profiles')} 下没找到任何 profile，用 --home / --profile 指定`,
+  )
+} else if (!existsSync(PROFILE_DIR)) {
+  fail(
+    `profile 目录不存在: ${PROFILE_DIR}`,
+    `可用的 profile: ${existsSync(join(DSH_HOME, 'profiles')) ? readdirSync(join(DSH_HOME, 'profiles')).join(', ') : '(无)'}`,
+  )
 } else {
   ok(`profile 目录存在`)
 }
@@ -342,9 +468,11 @@ if (!APPLY) {
   console.log('')
   console.log(c.b('这是只读预检，没有修改任何文件。'))
   console.log('确认无误后执行：')
-  console.log(`  ${c.b(`node bin/install.mjs --apply${PROFILE !== (process.env.DSH_PROFILE || 'desktop') ? ` --profile ${PROFILE}` : ''}`)}`)
+  // 把推断出来的定位原样回显，用户复制即用 —— 不依赖任何默认值。
+  const echo = `node bin/install.mjs --apply --home "${DSH_HOME}"${PROFILE ? ` --profile ${PROFILE}` : ''}`
+  console.log(`  ${c.b(echo)}`)
   console.log('')
-  console.log(c.warn('注意：安装后必须重启 DSH，当前会话会中断。'))
+  console.log(c.warn('注意：安装完不需要重启（HMR 会热挂载）；改代码之后才需要重启。'))
   process.exit(0)
 }
 
@@ -372,35 +500,17 @@ const current = JSON.stringify(profilePkg, null, 2) + '\n'
 const needsChange = desired !== current
 
 /**
- * pnpm 11 把 `strictDepBuilds` 的默认值翻成了 `true`：只要有依赖带构建脚本而未被
- * 显式批准，`pnpm install` 就以**非 0 退出**（ERR_PNPM_IGNORED_BUILDS）。
+ * 这里**故意不再**去改 profile 的 pnpm 配置。
  *
- * 这会把我们坑成"配置写对了、pnpm 却报失败 → 自动回滚"的假故障，
- * 而且报错内容（忽略构建脚本）跟"插件装不上"毫无关系，极难归因。
+ * 早先为了让 `pnpm install` 不在 pnpm 11 的 `strictDepBuilds` 门禁上非 0 退出，
+ * 安装器会往用户的 `pnpm-workspace.yaml` 里追加一行 `strictDepBuilds: false`。
+ * 那个门禁之所以会被触发，真正原因是**本插件自己带了一个 `install` 生命周期脚本**
+ * （已删除，见 package.json 与文件头）—— 为了绕开自己的缺陷，却把用户 profile 上
+ * 一道供应链门禁给全局关掉了，代价完全不对等。
  *
- * 本插件零运行时依赖、自身也没有 postinstall，不需要批准任何构建；
- * 所以在 profile 的 pnpm 配置里显式关掉这个门禁。用**文本追加**而不是 YAML 序列化：
- * profile 的 pnpm-workspace.yaml 里有大段解释性注释，重新序列化会把它们全抹掉。
- * （取键名 `strictDepBuilds`：pnpm 11 的 `allowBuilds` 只是构建允许清单，
- *  这里要关的是"未批准就报错"这个行为本身。）
+ * 现在改成：什么都不动；万一 pnpm 仍然因构建脚本非 0 退出，就把原因和动作明确打出来
+ * （见下面的失败分支），由用户决定要不要授权。
  */
-const PNPM_WS = join(PROFILE_DIR, 'pnpm-workspace.yaml')
-let patchedPnpmWs = false
-if (existsSync(PNPM_WS)) {
-  const txt = readFileSync(PNPM_WS, 'utf8')
-  if (!/^\s*strictDepBuilds\s*:/m.test(txt)) {
-    writeFileSync(
-      PNPM_WS,
-      txt.replace(/\s*$/, '') +
-        '\n\n# 由 dsh-agent-log 安装器写入：pnpm 11 起 strictDepBuilds 默认 true，\n' +
-        '# 只要有依赖带构建脚本就非 0 退出（ERR_PNPM_IGNORED_BUILDS），与安装成败无关。\n' +
-        '# 本插件零运行时依赖、无 postinstall，无需批准构建。\n' +
-        'strictDepBuilds: false\n',
-      'utf8',
-    )
-    patchedPnpmWs = true
-  }
-}
 
 let backupDir = null
 if (!needsChange) {
@@ -409,6 +519,8 @@ if (!needsChange) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
   backupDir = join(BACKUP_ROOT, stamp)
   mkdirSync(backupDir, { recursive: true })
+  // pnpm-lock.yaml 与 pnpm-workspace.yaml 都要备份：pnpm 自己会写它们
+  // （例如把未授权的构建脚本记进 allowBuilds），所以它们确实可能被这次安装改动。
   for (const f of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']) {
     const src = join(PROFILE_DIR, f)
     if (existsSync(src)) {
@@ -426,7 +538,6 @@ if (!needsChange) {
   writeFileSync(PROFILE_PKG, desired, 'utf8')
   console.log(`  ${c.ok('写入')} dependency ${PKG_NAME} = ${depSpec}`)
   console.log(`  ${c.ok('写入')} bundles 追加 ${PKG_NAME}`)
-  if (patchedPnpmWs) console.log(`  ${c.ok('写入')} pnpm-workspace.yaml 追加 strictDepBuilds: false`)
 }
 
 console.log('')
@@ -436,9 +547,22 @@ try {
   console.log('  ' + c.ok('pnpm install 成功'))
   if (out.trim()) console.log(c.dim(out.trim().split('\n').slice(-6).join('\n')))
 } catch (e) {
+  const raw = String(e.stdout ?? '') + String(e.stderr ?? '') + String(e.message ?? '')
   console.log('  ' + c.bad('pnpm install 失败'))
-  console.log(c.dim(String(e.stdout ?? e.message).slice(-1500)))
+  console.log(c.dim(raw.slice(-1500)))
   console.log('')
+  /**
+   * 构建脚本门禁要给**可操作的**提示，而不是让用户对着 ERR_PNPM_IGNORED_BUILDS 猜。
+   * 注意：这里只打印，**不替用户改 profile 的 pnpm 配置**（见上面那段说明）。
+   */
+  if (/ERR_PNPM_IGNORED_BUILDS|Ignored build scripts/.test(raw)) {
+    console.log(c.warn('原因：pnpm 拦下了某个依赖的构建脚本（与"插件装不上"无关）。'))
+    console.log(c.dim('  → 本插件自身没有构建脚本，被拦下的是 profile 里的其它依赖。'))
+    console.log(c.dim('  → 要在 profile 目录里运行 `pnpm approve-builds` 选择允许哪些；'))
+    console.log(c.dim('     或把 pnpm 打印出来的键写进 profile 的 pnpm-workspace.yaml（allowBuilds）。'))
+    console.log(c.dim('  → 不处理也不影响本插件：上面的依赖与 bundles 已经写好了。'))
+    console.log('')
+  }
   // 只有真的改动过配置才有备份可回滚。
   // 早先这里无条件 `readdirSync(backupDir)`：在"配置已是目标状态"（幂等、未建备份）
   // 的分支里 backupDir 是 null，安装失败时回滚逻辑自己抛错，
@@ -482,12 +606,13 @@ console.log('')
 console.log('─'.repeat(56))
 console.log(c.ok('安装完成。'))
 console.log('')
-console.log(c.b('下一步：重启 DSH'))
-console.log('  重启后：')
+console.log(c.b('下一步：等几秒，然后刷新页面'))
+console.log('  装了插件会新增 Loader 条目，HMR 会把它热挂载（实测约 5 秒），**不需要重启**：')
 console.log('    1. 对话里可以让模型调用 work_report 工具')
-console.log('    2. 右侧边栏「+」里会出现「Agent 工作报告」页签')
+console.log('    2. 右侧边栏「+」里会出现「Agent 工作报告」页签（没出现就刷新一次页面）')
+console.log('  只有在你**改了插件代码**之后才需要重启 DSH —— 宿主模块不会被热重载。')
 console.log('')
 console.log('  回滚命令：')
-console.log(`    ${c.b('node bin/install.mjs --rollback')}`)
+console.log(`    ${c.b(`node bin/install.mjs --rollback --home "${DSH_HOME}"${PROFILE ? ` --profile ${PROFILE}` : ''}`)}`)
 if (backupDir) console.log(`    ${c.dim('（备份在 ' + backupDir + '）')}`)
 else console.log(`    ${c.dim('（本次未产生备份——配置本来就已经是目标状态）')}`)

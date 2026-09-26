@@ -216,7 +216,16 @@ window.__ModuleLoader__.load({
       return fetch(`${ROUTE}?${q.join('&')}`).then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         const body = await r.text()
-        const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 13)
+        // 文件名里的时间戳必须是**本地**时间：早先用 toISOString()（UTC），
+        // 用户在 20:30 下载到的文件却叫 ...T1230，和自己的时钟对不上。
+        const stamp = (() => {
+          const d = new Date()
+          const p = (n) => String(n).padStart(2, '0')
+          return (
+            `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}T` +
+            `${p(d.getHours())}${p(d.getMinutes())}`
+          )
+        })()
         const ext = kind === 'html' ? 'html' : 'md'
         const name = `本次Agent工作报告-${shortId(sessionId)}-${stamp}.${ext}`
         const blob = new Blob([body], {

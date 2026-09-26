@@ -4,22 +4,33 @@
  * 不碰真实 client.js —— 只把校验逻辑喂进一个含坏 token 的样本。
  */
 import { readFileSync } from 'node:fs'
+import { runtimePackageFile } from './_home.mjs'
 
-// 核对真正在运行的 DSH 的主题包（这台机器上有两个运行时，先找 Desktop app）
-const THEME_CANDIDATES = [
-  'E:/tools/dsh-desktop/DSH Desktop/resources/app/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js',
-  'E:/tools/dsh/runner/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js',
-]
+// 核对真正在运行的 DSH 的主题包。路径不再写死某台机器：
+// 先看开发期 junction（`npm run dev:setup` 建的），再看各 DSH 运行时。
+const themePath = runtimePackageFile('dsh-client-ui-theme/lib/client.js')
 let themeSrc = null
-for (const p of THEME_CANDIDATES) {
+if (themePath) {
   try {
-    themeSrc = readFileSync(p, 'utf8')
-    break
-  } catch { /* 试下一个 */ }
+    themeSrc = readFileSync(themePath, 'utf8')
+  } catch {
+    themeSrc = null
+  }
 }
 if (!themeSrc) {
-  console.log('❌ 找不到任何主题包')
-  process.exit(1)
+  /**
+   * 找不到主题包就**跳过**，而不是判失败。
+   *
+   * 这个文件验的是"token 校验逻辑能抓到坏 token"，它需要一份**真实**的主题包
+   * 当参照物。本仓库零依赖、新克隆没有那个 junction —— 那时判失败，红的原因
+   * 跟校验逻辑毫无关系。发布前想强制要求它，设 DSH_REQUIRE_VALIDATOR=1。
+   */
+  if (process.env.DSH_REQUIRE_VALIDATOR === '1') {
+    console.log('❌ 设了 DSH_REQUIRE_VALIDATOR=1，但找不到任何主题包')
+    process.exit(1)
+  }
+  console.log('⏭  跳过：没找到 DSH 主题包（先跑 `npm run dev:setup`）')
+  process.exit(0)
 }
 const real = new Set(themeSrc.match(/--dsw-[a-z0-9-]+/g) ?? [])
 

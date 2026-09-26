@@ -16,6 +16,9 @@
  * 退出码：0 = 已加载；1 = 未加载；2 = 无法判断
  */
 import { listSessions, readSessionLog, readProjectionCache } from '../core/session-log.mjs'
+import { join, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { stamp } from '../core/time.mjs'
 
 const argv = process.argv.slice(2)
 const has = (f) => argv.includes(f)
@@ -24,7 +27,12 @@ const val = (f, d = null) => {
   return i >= 0 && i + 1 < argv.length ? argv[i + 1] : d
 }
 
-const HOME = process.env.DSH_HOME || 'E:\\tools\\dsh'
+// DSH home：$DSH_HOME → $DSH_PROFILE_DIR/../.. → ~/.dsh。
+// 不写死任何机器路径 —— 早先这里是 `|| 'E:\\tools\\dsh'`。
+const HOME =
+  process.env.DSH_HOME?.trim() ||
+  (process.env.DSH_PROFILE_DIR?.trim() ? resolve(process.env.DSH_PROFILE_DIR.trim(), '..', '..') : null) ||
+  join(homedir(), '.dsh')
 const TOOL = 'work_report'
 const PLUGIN = 'dsh-agent-log'
 
@@ -78,7 +86,7 @@ for (const entry of targets) {
 
   const cache = readProjectionCache(HOME, entry.sessionId)
   const title = cache?.record?.rows?.title?.val ?? ''
-  const at = new Date(last.time ?? 0).toISOString().replace('T', ' ').slice(0, 19)
+  const at = stamp(last.time ?? 0)
 
   console.log(`会话 ${entry.sessionId}`)
   if (title) dim(`标题: ${title}`)

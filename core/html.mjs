@@ -10,6 +10,8 @@
  * 由 test/regression-fixes.mjs 断言"没有漏网的 ## / | 行"来兜住。
  */
 
+import { stamp } from './time.mjs'
+
 const esc = (s) =>
   String(s)
     .replace(/&/g, '&amp;')
@@ -207,7 +209,7 @@ footer{max-width:920px;margin:14px auto 0;color:#57606a;font-size:12px;text-alig
 export function reportDocument(markdown, meta = {}) {
   const title = '本次 Agent 工作报告'
   const sid = meta.sessionId ?? ''
-  const gen = meta.generatedAt ? new Date(meta.generatedAt).toLocaleString() : new Date().toLocaleString()
+  const gen = stamp(meta.generatedAt ?? Date.now())
 
   /**
    * 陈旧模块横幅。
@@ -218,7 +220,7 @@ export function reportDocument(markdown, meta = {}) {
    * 看报告的人无从判断"这份报告是新代码还是旧代码产出的"。
    */
   const staleHtml = meta.stale
-    ? `<aside class="wl-stale"><strong>⚠️ 宿主加载的是旧版插件模块</strong>（加载于 ${esc(meta.loadedAt ? new Date(meta.loadedAt).toLocaleString() : '未知时间')}），` +
+    ? `<aside class="wl-stale"><strong>⚠️ 宿主加载的是旧版插件模块</strong>（加载于 ${esc(stamp(meta.loadedAt ?? Date.now()))}），` +
       `磁盘上有更新的文件：${esc((meta.newer ?? []).join('、') || '（未列出）')}。` +
       `本报告的数字与文案可能与你当前的源码不符 —— <strong>请重启 DSH</strong> 后再生成。</aside>\n`
     : ''

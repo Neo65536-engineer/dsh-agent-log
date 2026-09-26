@@ -26,28 +26,39 @@ const check = (name, cond, extra = '') => {
 
 /** 造一个最小的假 cordis ctx。services 决定哪些可选依赖"存在"。 */
 function makeCtx({ services = ['tools', 'webServer'] } = {}) {
-  const state = { tools: [], routes: [], effects: [], injects: [] }
+  const state = { tools: [], routes: [], effects: [], injects: [], logs: [] }
+  /**
+   * 服务在真实 Host 里是**单例**：同一个 ctx 上反复 `get('webServer')` 拿到的
+   * 必须是同一个对象。早先这里每次调用都返回一个新字面量，于是"按 webServer 实例
+   * 记账"的重复注册守卫在测试里永远不可能触发 —— 测不出真实行为，等于没测。
+   */
+  const serviceCache = new Map()
   const ctx = {
-    logger: { info: () => {} },
+    logger: {
+      info: (...a) => state.logs.push(a.join(' ')),
+      warn: (...a) => state.logs.push(a.join(' ')),
+    },
     get(name) {
       if (!services.includes(name)) return undefined
+      if (serviceCache.has(name)) return serviceCache.get(name)
+      let svc
       if (name === 'tools') {
-        return {
+        svc = {
           register(def) {
             state.tools.push(def)
             return () => {}
           },
         }
-      }
-      if (name === 'webServer') {
-        return {
+      } else if (name === 'webServer') {
+        svc = {
           register(route) {
             state.routes.push(route)
             return () => {}
           },
         }
       }
-      return undefined
+      if (svc) serviceCache.set(name, svc)
+      return svc
     },
     effect(fn, label) {
       state.effects.push(label ?? '(no-label)')
@@ -157,6 +168,20 @@ try {
 }
 check('连续 apply 两次未抛错', err3 === null, String(err3?.message))
 check('工具被注册两次（交由注册表去重/报错）', d.state.tools.length === 2, String(d.state.tools.length))
+/**
+ * 关键护栏：**同一个 webServer 上重复注册同一条路由会让它崩掉**。
+ * 社区里真实踩过（市场安装与手写安装器各注册一次 → 启动崩溃），
+ * 而当时的"修法"只是在 README 里叮嘱用户"二选一"——把崩溃风险交给用户去记。
+ * 现在由插件自己挡：第二次不再注册，并且**留下日志**（不静默）。
+ */
+check('同一条路由不会被重复注册', d.state.routes.length === 1, String(d.state.routes.length))
+check('被挡掉的那次有日志说明（不是静默跳过）',
+  d.state.logs.some((l) => /already registered/.test(l)), JSON.stringify(d.state.logs).slice(0, 300))
+
+// 守卫是按 **webServer 实例** 记账的：另一个实例（另一套 Host）照常注册。
+const e = makeCtx()
+applyPlugin(e.ctx)
+check('另一个 webServer 实例照常注册路由', e.state.routes.length === 1, String(e.state.routes.length))
 
 console.log(`\n${'='.repeat(46)}`)
 console.log(`通过 ${pass} · 失败 ${fail}`)

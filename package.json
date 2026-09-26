@@ -1,6 +1,6 @@
 {
   "name": "dsh-agent-log",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Agent 工作记录 / 任务复盘 / 自动生成项目报告：从 DSH 会话日志只读还原这次任务做了什么，并产出可读的《本次 Agent 工作报告》",
   "license": "MIT",
   "private": true,
@@ -73,6 +73,7 @@
     "bin",
     "cordis.patch.yml",
     "README.md",
+    "DEVELOPMENT.md",
     "LICENSE"
   ],
   "scripts": {
@@ -80,8 +81,9 @@
     "list": "node bin/worklog.mjs --list",
     "daily": "node bin/worklog.mjs --period --since today",
     "preflight": "node bin/install.mjs",
-    "install": "node bin/install.mjs --apply",
+    "apply": "node bin/install.mjs --apply",
     "rollback": "node bin/install.mjs --rollback",
+    "dev:setup": "node bin/dev-setup.mjs",
     "compose": "node bin/verify-compose.mjs",
     "loaded": "node bin/verify-loaded.mjs",
     "verify": "node test/run-all.mjs",

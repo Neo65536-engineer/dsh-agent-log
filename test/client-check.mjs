@@ -13,12 +13,14 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { runtimePackageFile } from './_home.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 
 let pass = 0
 let fail = 0
+let skipped = 0
 const check = (name, cond, extra = '') => {
   if (cond) {
     pass++
@@ -182,26 +184,26 @@ check('下载锚点用完立刻移除', src.includes('a.remove()'))
 // token——不会报错，但整个面板会静默退化成"没有样式"。必须机器把关。
 //
 // 注意：必须核对**真正在运行的那个 DSH 的主题包**。
-// 这台机器上有两个运行时（Desktop app 与旧的 runner），版本不同，先找 app。
+// 早期这里写死了这台机器上两个运行时的绝对路径 —— 换台机器就永远读不到，
+// 而读不到的后果是"token 校验静默失效"（正是它要防的那类静默故障）。
+// 现在走 _home.mjs：开发期 junction 优先，其次各 DSH 运行时；真的找不到就**跳过**。
 console.log('\n=== 4b. 用到的 --dsw-* token 是否真实存在 ===')
-const THEME_CANDIDATES = [
-  'E:/tools/dsh-desktop/DSH Desktop/resources/app/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js',
-  'E:/tools/dsh/runner/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js',
-]
+const themePath = runtimePackageFile('dsh-client-ui-theme/lib/client.js')
 let realTokens = null
-let themeUsed = null
-for (const p of THEME_CANDIDATES) {
+if (themePath) {
   try {
-    const themeSrc = readFileSync(p, 'utf8')
-    realTokens = new Set(themeSrc.match(/--dsw-[a-z0-9-]+/g) ?? [])
-    themeUsed = p
-    break
-  } catch { /* 试下一个 */ }
+    realTokens = new Set(readFileSync(themePath, 'utf8').match(/--dsw-[a-z0-9-]+/g) ?? [])
+  } catch {
+    realTokens = null
+  }
 }
 if (realTokens) {
-  console.log(`     对照的主题包: ${themeUsed.includes('dsh-desktop') ? 'Desktop app 运行时' : 'runner（旧）'}`)
+  console.log(`     对照的主题包: ${themePath}`)
+} else if (process.env.DSH_REQUIRE_VALIDATOR === '1') {
+  check('能读到主题包', false, '设了 DSH_REQUIRE_VALIDATOR=1，必须能验 token')
 } else {
-  check('能读到主题包', false, THEME_CANDIDATES.join(' | '))
+  skipped++
+  console.log('  ⏭  token 存在性校验 —— 跳过（没找到 DSH 主题包，先跑 `npm run dev:setup`）')
 }
 if (realTokens) {
   // 先剥掉注释，否则文档里写的示意（例如「用 dsw 别名变量」旁边的 token 通配写法）
@@ -229,5 +231,5 @@ check('dsh.bundle.patch 存在', pkg.dsh?.bundle?.patch === './cordis.patch.yml'
 check('files 含 client.js', (pkg.files ?? []).includes('client.js'))
 
 console.log(`\n${'='.repeat(46)}`)
-console.log(`通过 ${pass} · 失败 ${fail}`)
+console.log(`通过 ${pass} · 失败 ${fail}` + (skipped ? ` · 跳过 ${skipped}` : ''))
 process.exit(fail === 0 ? 0 : 1)

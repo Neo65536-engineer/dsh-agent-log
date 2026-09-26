@@ -45,6 +45,9 @@ function runInstaller(args) {
 
 const sandbox = mkdtempSync(join(tmpdir(), 'dsh-worklog-install-'))
 
+/** 沙箱 profile 的初始 pnpm 配置；最后一个断言会要求它与安装后**逐字节一致**。 */
+const WS_BEFORE = 'packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n'
+
 const BEFORE = {
   name: 'dsh-profile-testprofile',
   private: true,
@@ -60,7 +63,7 @@ function makeHome(tag) {
   mkdirSync(join(HOME, 'sessions', '--X--'), { recursive: true })
   mkdirSync(join(HOME, 'storages', 'session_projcache', 'sessions'), { recursive: true })
   writeFileSync(join(PROFILE_DIR, 'package.json'), JSON.stringify(BEFORE, null, 2) + '\n', 'utf8')
-  writeFileSync(join(PROFILE_DIR, 'pnpm-workspace.yaml'), 'packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n', 'utf8')
+  writeFileSync(join(PROFILE_DIR, 'pnpm-workspace.yaml'), WS_BEFORE, 'utf8')
   return { HOME, PROFILE_DIR, PROFILE_PKG: join(PROFILE_DIR, 'package.json') }
 }
 
@@ -158,12 +161,37 @@ check('仍能跑离线 CLI（真正加载了包）', (() => {
   }
 })(), 'CLI 未能加载')
 
-// pnpm 11 门禁：strictDepBuilds 必须被写进 profile 的 pnpm 配置，否则 install 非 0 退出
-console.log('\n=== 2c. pnpm 11 的 strictDepBuilds 门禁已被处理 ===')
+// ---------------------------------------------------------------- 2c. 不得改 pnpm 配置
+//
+// 早先为了让 pnpm 11 的 `strictDepBuilds` 门禁不把 `pnpm install` 弄成非 0 退出，
+// 安装器会往 profile 的 pnpm-workspace.yaml 里追加 `strictDepBuilds: false`。
+// 那个门禁之所以会被触发，真正原因是**本插件自己带了一个 install 生命周期脚本**；
+// 为了绕开自己的缺陷，却把用户 profile 上的一道供应链门禁全局关掉，代价完全不对等。
+// 缺陷已删（见 package.json），这个副作用也必须一起消失 —— 所以现在这里断言**没动过**。
+console.log('\n=== 2c. 不得擅自修改 profile 的 pnpm 配置 ===')
 const wsText = readFileSync(join(A.PROFILE_DIR, 'pnpm-workspace.yaml'), 'utf8')
-check('pnpm-workspace.yaml 里有 strictDepBuilds: false', /^\s*strictDepBuilds\s*:\s*false\s*$/m.test(wsText), wsText)
-check('原有 pnpm 配置未被破坏（nodeLinker/autoInstallPeers 仍在）',
+check('pnpm-workspace.yaml 逐字节未被改动', wsText === WS_BEFORE, JSON.stringify(wsText))
+check('没有写入 strictDepBuilds', !/strictDepBuilds/.test(wsText))
+check('原有 pnpm 配置仍在（nodeLinker/autoInstallPeers）',
   /nodeLinker:\s*hoisted/.test(wsText) && /autoInstallPeers:\s*false/.test(wsText))
+
+// ---------------------------------------------------------------- 2d. 备份目录位置
+//
+// 备份是**唯一的回滚点**，所以它不能放在会被 pnpm 重建的地方。
+// 早先默认放在插件目录（`.install-backups`）：`file:` 安装时插件目录就在
+// `<profile>/node_modules/` 里，下一次 `pnpm install` 就可能连备份一起重建掉。
+// 现在默认放进 profile 目录，与"它改过的那个 profile"一一对应。
+console.log('\n=== 2d. 备份目录默认落在 profile 里 ===')
+const C = makeHome('C')
+const appliedC = runInstaller(['--home', C.HOME, '--profile', 'testprofile', '--source-dir', PLUGIN_DIR, '--link', '--apply'])
+check('安装退出码 0', appliedC.code === 0, `code=${appliedC.code}\n${String(appliedC.stdout).slice(-600)}`)
+const cBackupRoot = join(C.PROFILE_DIR, '.dsh-agent-log-backups')
+check('默认备份目录在 profile 内', existsSync(cBackupRoot), cBackupRoot)
+const cBackups = existsSync(cBackupRoot) ? readdirSync(cBackupRoot) : []
+check('备份里有 package.json（回滚要用）',
+  cBackups.length > 0 && existsSync(join(cBackupRoot, cBackups[0], 'package.json')), JSON.stringify(cBackups))
+check('备份里有 target.json（记着改的是哪个 profile）',
+  cBackups.length > 0 && existsSync(join(cBackupRoot, cBackups[0], 'target.json')), JSON.stringify(cBackups))
 
 // ---------------------------------------------------------------- 3. 幂等
 console.log('\n=== 3. 重复 --apply 是幂等的 ===')

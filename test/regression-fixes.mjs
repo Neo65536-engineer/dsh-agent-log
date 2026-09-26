@@ -13,6 +13,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, unlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import {
@@ -25,13 +26,13 @@ import {
   recentSessions,
   reportDocument,
 } from '../index.js'
-import { renderReport } from '../core/render.mjs'
+import { renderReport, DETAIL_LIMIT } from '../core/render.mjs'
 import { stripAnsi, firstLines } from '../core/session-log.mjs'
 import { testOutputLooksFailed, testOutputLooksPassed, classifyTestOutcome, flattenCommand, hasRealTestInvocation } from '../core/collect.mjs'
+import { HOME } from './_home.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
-const HOME = process.env.DSH_HOME || 'E:\\tools\\dsh'
 
 let pass = 0
 let fail = 0
@@ -229,7 +230,8 @@ const c3 = cli(['--period', '--since', '30d', '--until', 'bananas'])
 check('--until 非法 → exit 2（不再退化成 1970）', c3.code === 2 && !c3.stdout.includes('1970'), `exit=${c3.code}`)
 const c4 = cli(['--period', '--since', '7d', '--until', '2020-01-01'])
 check('--until 早于 --since → exit 2（不再静默出空报告）', c4.code === 2 && c4.stdout.includes('早于'), `exit=${c4.code}`)
-const jsonOut = join('E:\\tools\\work', '_plugin-test', `cli-json-${Date.now()}.json`)
+// 写到临时目录，不写死作者机器上的路径（换台机器就是往不存在的地方写）
+const jsonOut = join(tmpdir(), `dsh-agent-log-cli-json-${Date.now()}.json`)
 const c5 = cli(['--latest', '--json', '--out', jsonOut])
 check('--json + --out 同时给：文件被写出来（不再静默丢弃）', c5.code === 0 && existsSync(jsonOut), `exit=${c5.code}`)
 if (existsSync(jsonOut)) unlinkSync(jsonOut)
@@ -415,6 +417,55 @@ check('构建产物里 tests 条目带 kind 与 passed 字段',
     const t = buildReport(HOME, sample.sessionId, 0).record.totals.allTests ?? []
     return t.every((x) => typeof x.kind === 'string' && (x.passed === true || x.passed === false || x.passed === null))
   })())
+
+// --- 时间戳口径：面向人的时间必须**本地**且带时区标注
+//
+// 真机上出现过：表头「生成时间」用 toISOString()（UTC、且不标时区），
+// 而命令表用 getHours()（本地），同一份报告里差 8 小时；HTML 下载件又是第三种。
+// 用户第一眼会以为报告是错的 —— 这类"自相矛盾"比数字不准更伤信任。
+console.log('\n--- 时间戳口径必须统一（本地 + 时区标注）---')
+{
+  const T = JSON.parse(JSON.stringify(built.record))
+  const md = renderReport(T, { now: Date.now() })
+  const localDate = (() => {
+    const d = new Date()
+    const p = (n) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+  })()
+  const stampLine = (md.match(/\| 生成时间 \| ([^|]+) \|/) ?? [])[1] ?? ''
+  check('「生成时间」用的是本地日期（不是 UTC 日期）', stampLine.includes(localDate), stampLine.trim())
+  check('「生成时间」带 (UTC±HH:MM) 标注', /\(UTC[+-]\d{2}:\d{2}\)/.test(stampLine), stampLine.trim())
+  check('报告里不再出现裸 ISO 的 UTC 时间戳', !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(md))
+  const doc = reportDocument(md, { sessionId: 'x', generatedAt: Date.now() })
+  check('HTML 文档的生成时间与 markdown 同口径（本地 + 时区标注）',
+    /生成时间 [^<]*\(UTC[+-]\d{2}:\d{2}\)/.test(doc), (doc.match(/生成时间[^<]{0,40}/) ?? [''])[0])
+}
+
+// --- 明细上限：报告是要进模型上下文的，必须封顶，且**说明**被截断了
+console.log('\n--- 明细上限（防止长会话把上下文吃光）---')
+{
+  const T = JSON.parse(JSON.stringify(built.record))
+  const totalCommands = built.record.totals.commands
+  // 自己造 500 条命令，而不是依赖"样本会话恰好命令很多" —— 数据依赖的断言换台机器就会红。
+  // 注意位置：renderReport 读的是 `record.totals.allCommands`（不是 record.allCommands）。
+  const seedCmd = built.record.totals.allCommands?.[0]
+  T.totals.allCommands = Array.from({ length: 500 }, (_, i) => ({
+    at: seedCmd?.at ?? Date.now(),
+    turn: seedCmd?.turn ?? 1,
+    ok: true,
+    durationMs: 5,
+    command: `echo ${i}`,
+  }))
+  const md = renderReport(T)
+  const rows = (md.match(/^\| \d+ \| \d{2}:\d{2}:\d{2} \|/gm) ?? []).length
+  check('命令明细被截断到上限（正好 N 行）', rows === DETAIL_LIMIT, `rows=${rows} limit=${DETAIL_LIMIT}`)
+  check('截断时明确写出总条数与恢复办法',
+    /明细过长/.test(md) && /共 \*\*500\*\*/.test(md) && /format: "json"/.test(md),
+    (md.match(/> ⚠️ 明细过长[^\n]*/) ?? ['(没有截断提示)'])[0])
+  check('截断只作用于明细：总览的命令数仍是全量',
+    md.includes(`| 命令执行 | ${totalCommands.toLocaleString('en-US')} |`), `commands=${totalCommands}`)
+  check('未超上限时不显示截断提示', !/明细过长/.test(renderReport(built.record)), '')
+}
 
 console.log(`\n${'='.repeat(46)}`)
 console.log(`通过 ${pass} · 失败 ${fail}`)

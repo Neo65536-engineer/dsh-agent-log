@@ -2,8 +2,8 @@
 /** 验证假设：权威 steps = step/end 数（已关闭的步），而非 step/start 数。 */
 import { listSessions, readSessionLog, readProjectionCache } from '../core/session-log.mjs'
 import { isLiveSession, splitDiffs } from './_live.mjs'
+import { HOME } from './_home.mjs'
 
-const HOME = process.env.DSH_HOME || 'E:\\tools\\dsh'
 let startEqEnd = 0
 let startEqAuth = 0
 let endEqAuth = 0

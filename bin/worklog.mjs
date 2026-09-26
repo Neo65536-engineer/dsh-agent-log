@@ -14,9 +14,12 @@ import { readSessionLog, listSessions, readProjectionCache, messageText } from '
 import { collectWorkRecord } from '../core/collect.mjs'
 import { renderReport } from '../core/render.mjs'
 import { aggregatePeriod, renderPeriod, parseWhen, dayKey } from '../core/period.mjs'
+import { mdhm, ymd } from '../core/time.mjs'
 
-/** 依次尝试：显式参数 → 环境变量 → 常见安装位置 → 用户目录。
- *  注意：显式给了 --home 就不能静默降级——否则用户查别的 profile 会拿到 E:\tools\dsh 的数据还以为成功。 */
+/** 依次尝试：显式参数 → 环境变量 → 用户目录（与 DSH 自身一致：$DSH_HOME → ~/.dsh）。
+ *  注意：显式给了 --home 就不能静默降级——否则用户查别的 profile 会拿到别处的数据还以为成功。
+ *  这里**不允许**出现机器写死的路径：早先候选表里有一项是作者的 `E:\tools\dsh`，
+ *  在别人的机器上它只会让报错更难懂。 */
 function detectHome(explicit) {
   const ok = (c) => c && existsSync(join(c, 'sessions'))
   if (explicit) {
@@ -30,9 +33,7 @@ function detectHome(explicit) {
     process.env.DSH_HOME,
     process.env.DSH_PROFILE_DIR ? resolve(process.env.DSH_PROFILE_DIR, '..', '..') : null,
     process.env.USERPROFILE ? join(process.env.USERPROFILE, '.dsh') : null,
-    'E:\\tools\\dsh',
-    '/root/.dsh',
-    join(process.env.HOME ?? '', '.dsh'),
+    process.env.HOME ? join(process.env.HOME, '.dsh') : null,
   ].filter(Boolean)
   for (const c of cands) {
     if (ok(c)) return c
@@ -104,7 +105,7 @@ if (flag('--period')) {
     until = parsed + 86400000 - 1
   }
   if (until < since) {
-    console.error(`--until（${new Date(until).toISOString().slice(0, 10)}）早于 --since（${new Date(since).toISOString().slice(0, 10)}），范围为空。`)
+    console.error(`--until（${ymd(until)}）早于 --since（${ymd(since)}），范围为空。`)
     process.exit(2)
   }
   const days = Math.max(1, Math.round((until - since) / 86400000))
@@ -129,7 +130,7 @@ if (flag('--list')) {
   for (const s of sessions.slice(0, LIMIT)) {
     const cache = readProjectionCache(home, s.sessionId)
     const title = cache?.record?.rows?.title?.val ?? ''
-    const at = new Date(s.mtimeMs).toISOString().replace('T', ' ').slice(0, 16)
+    const at = mdhm(s.mtimeMs)
     console.log(`${at}  ${(s.bytes / 1024).toFixed(0).padStart(6)}KB  ${s.sessionId}`)
     if (title) console.log(`            ${title}`)
   }

@@ -12,6 +12,7 @@
  * 这些是「重启前能确定」的全部；真正的加载只有重启才知道。
  */
 import { readFileSync, existsSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -27,7 +28,14 @@ const check = (name, cond, extra = '') => {
   }
 }
 
-const PROFILE_DIR = process.env.DSH_PROFILE_DIR || 'E:\\tools\\dsh\\profiles\\desktop'
+// profile 定位：显式 $DSH_PROFILE_DIR → $DSH_HOME/profiles/<profile> → ~/.dsh/profiles/desktop。
+// 不写死任何一台机器的绝对路径。
+const PROFILE_DIR =
+  process.env.DSH_PROFILE_DIR ||
+  (() => {
+    const home = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
+    return join(home, 'profiles', process.env.DSH_PROFILE?.trim() || 'desktop')
+  })()
 const PKG = 'dsh-agent-log'
 console.log(`profile: ${PROFILE_DIR}\n`)
 

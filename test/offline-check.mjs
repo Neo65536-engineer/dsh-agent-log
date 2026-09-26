@@ -6,9 +6,12 @@
 import { workReportTool, detectHome } from '../index.js'
 import { readSessionLog } from '../core/session-log.mjs'
 import { collectWorkRecord } from '../core/collect.mjs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 let pass = 0
 let fail = 0
+let skipped = 0
 const check = (name, cond, extra = '') => {
   if (cond) {
     pass++
@@ -18,6 +21,20 @@ const check = (name, cond, extra = '') => {
     console.log(`  ❌ ${name} ${extra}`)
   }
 }
+/**
+ * 「跳过」是**独立于失败**的一种结果。
+ *
+ * 需要它的原因：本仓库零依赖，而 DSH 的 schema 校验器只存在于 DSH 安装里。
+ * 早先这里把"加载不到校验器"直接判成失败 —— 于是任何**新克隆**（没有那个
+ * junction）跑 `npm run verify` 必红一项，而红的原因跟代码质量毫无关系。
+ * 正确语义是：能拿到就严格校验；拿不到就说明跳过，并给出恢复办法。
+ * 发布前想强制要求它，设 DSH_REQUIRE_VALIDATOR=1。
+ */
+const skip = (name, why) => {
+  skipped++
+  console.log(`  ⏭  ${name} —— 跳过（${why}）`)
+}
+const REQUIRE_VALIDATOR = process.env.DSH_REQUIRE_VALIDATOR === '1'
 
 console.log('=== 1. 工具定义自检 ===')
 check('name 正确', workReportTool.name === 'work_report', workReportTool.name)
@@ -37,8 +54,8 @@ try {
   // 通过包名导入（node_modules/@deepseek-ai 已链到 DSH 安装目录）。
   // 直接 import 包内文件路径会被 package.json 的 exports 映射挡住，所以必须走包名。
   dshTools = await import('@deepseek-ai/dsh-tools')
-} catch (e) {
-  check('能加载 DSH 校验器', false, `(${e.message})`)
+} catch {
+  dshTools = null
 }
 if (dshTools?.assertSupportedJsonSchema) {
   const { assertSupportedJsonSchema } = dshTools
@@ -62,7 +79,13 @@ if (dshTools?.assertSupportedJsonSchema) {
   }
   check('output.schema 通过 assertSupportedJsonSchema', outOk, outErr)
 } else {
-  check('能加载 DSH 校验器', false, '（node_modules/@deepseek-ai 链丢失？）')
+  const why = '未找到 @deepseek-ai/dsh-tools —— 先跑 `npm run dev:setup` 把开发期 junction 建起来'
+  if (REQUIRE_VALIDATOR) {
+    check('能加载 DSH 校验器', false, `(${why})`)
+  } else {
+    skip('能加载 DSH 校验器', why)
+    skip('parameters / output.schema 的受支持子集校验', '同上（schema 仍是手写的，只是没被宿主校验器验过）')
+  }
 }
 
 
@@ -89,12 +112,15 @@ check('totals 存在', !!parsed.totals)
 check('totals.finished 是布尔', typeof parsed.totals.finished === 'boolean')
 
 console.log('\n=== 5. execute：--out 写文件 ===')
-const outFile = 'E:/tools/work/_plugin-tool-test.md'
+// 写进临时目录：不写死作者机器上的绝对路径（别人跑会往不存在的地方写）
+const outFile = join(tmpdir(), `dsh-agent-log-out-${Date.now()}.md`)
 const r3 = await workReportTool.execute({ sessionId: 'session-2e667305', out: outFile }, {})
-check('writtenTo 指向目标', String(r3.writtenTo).replace(/\\/g, '/') === outFile, String(r3.writtenTo))
-const { readFileSync, existsSync } = await import('node:fs')
+check('writtenTo 指向目标', resolve(String(r3.writtenTo)) === resolve(outFile), String(r3.writtenTo))
+const { readFileSync, existsSync, rmSync } = await import('node:fs')
 check('文件真的写出来了', existsSync(outFile))
 check('文件含报告标题', readFileSync(outFile, 'utf8').includes('# 本次 Agent 工作报告'))
+rmSync(outFile, { force: true })
+rmSync(outFile + '.tmp', { force: true })
 
 console.log('\n=== 6. execute：错误会话要报错 ===')
 let threw = null
@@ -117,5 +143,6 @@ check('工具调用数一致', direct.totals.toolCalls === viaTool.totals.toolCa
 check('失败数一致', direct.totals.failures === viaTool.totals.failures, `${direct.totals.failures} vs ${viaTool.totals.failures}`)
 
 console.log(`\n${'='.repeat(46)}`)
-console.log(`通过 ${pass} · 失败 ${fail}`)
+console.log(`通过 ${pass} · 失败 ${fail}` + (skipped ? ` · 跳过 ${skipped}` : ''))
+if (skipped) console.log('（跳过项需要 DSH 运行时才能验：npm run dev:setup）')
 process.exit(fail === 0 ? 0 : 1)

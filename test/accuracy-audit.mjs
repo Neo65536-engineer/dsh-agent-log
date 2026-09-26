@@ -14,8 +14,7 @@
 import { listSessions, readSessionLog, readProjectionCache } from '../core/session-log.mjs'
 import { collectWorkRecord } from '../core/collect.mjs'
 import { isLiveSession, splitDiffs } from './_live.mjs'
-
-const HOME = process.env.DSH_HOME || 'E:\\tools\\dsh'
+import { HOME } from './_home.mjs'
 
 let checked = 0
 let exact = 0

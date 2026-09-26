@@ -4,6 +4,7 @@
  */
 import { firstLines } from './session-log.mjs'
 import { flattenCommand } from './collect.mjs'
+import { hms, mdhm, stamp } from './time.mjs'
 
 const n = (x) => (x ?? 0).toLocaleString('en-US')
 const pct = (a, b) => (b > 0 ? `${Math.round((a / b) * 100)}%` : '—')
@@ -23,19 +24,29 @@ const short = (p, cwd) => {
   }
   return s || '.'
 }
-/** 时间戳 → HH:MM:SS（本地） */
-const hms = (t) => {
-  if (typeof t !== 'number') return '—'
-  const d = new Date(t)
-  const p = (n) => String(n).padStart(2, '0')
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-}
-/** 时间戳 → MM-DD HH:MM */
-const mdhm = (t) => {
-  if (typeof t !== 'number') return '—'
-  const d = new Date(t)
-  const p = (n) => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+
+/**
+ * 明细列表的行数上限。
+ *
+ * 为什么必须有：报告是**要进模型上下文**的。一条命令一行、一个文件一行，
+ * 实测 1 轮 43 条命令就有约 10KB；几百轮的真实会话会到几十上百 KB，
+ * 一次 `work_report({})` 就能把上下文吃掉一大块。
+ *
+ * 注意上限只作用于 **markdown 正文**：`totals` 与 `record` 始终完整，
+ * 所以侧边栏面板（读 record）和 `format: "json"` 拿到的仍是全量数据。
+ * HTML 文档是从这份 markdown 渲染的，因此它同样是**截断后**的版本 ——
+ * 提示语里不能把 HTML 说成"完整明细"。
+ */
+const DETAIL_LIMIT = 80
+/** 供测试引用的默认明细上限。 */
+export { DETAIL_LIMIT }
+
+const cap = (list, limit) => (list.length > limit ? list.slice(0, limit) : list)
+
+/** 被截断时给出的一行说明；没截断返回 null。 */
+function capNote(total, shown, where = '`format: "json"`') {
+  if (total <= shown) return null
+  return `> ⚠️ 明细过长，此处只列前 **${shown}** 条（共 **${total}** 条）。完整数据见侧边栏面板或 ${where}。`
 }
 
 const REASON_LABEL = {
@@ -49,6 +60,7 @@ export function renderReport(record, opts = {}) {
   const T = record.totals
   const L = []
   const now = opts.now ? new Date(opts.now) : new Date()
+  const limit = Number.isInteger(opts.detailLimit) && opts.detailLimit > 0 ? opts.detailLimit : DETAIL_LIMIT
 
   // 进行中 = 还有轮次没写 endedAt。报告是快照，不能把"还没结束"说成"0 秒完成"。
   const inProgress = record.turns.some((t) => !t.endedAt)
@@ -77,7 +89,7 @@ export function renderReport(record, opts = {}) {
   L.push(`| --- | --- |`)
   L.push(`| 会话 | \`${record.sessionId}\` |`)
   L.push(`| 工作目录 | \`${cwd ?? '-'}\` |`)
-  L.push(`| 生成时间 | ${now.toISOString().replace('T', ' ').slice(0, 19)} |`)
+  L.push(`| 生成时间 | ${stamp(now)} |`)
   L.push(`| 结论 | **${verdict}** |`)
   L.push(`| 权限档位 | sandbox=\`${record.permissions.sandbox ?? '-'}\` approval=\`${record.permissions.approval ?? '-'}\` |`)
   L.push('')
@@ -118,11 +130,16 @@ export function renderReport(record, opts = {}) {
   } else {
     L.push(`| 工具 | 调用次数 | 占比 | 失败 | 累计耗时 | 首次 | 末次 | 涉及轮次 |`)
     L.push(`| --- | --- | --- | --- | --- | --- | --- | --- |`)
-    for (const t of toolDetail) {
+    for (const t of cap(toolDetail, limit)) {
       L.push(
         `| \`${t.name}\` | ${t.count} | ${pct(t.count, T.toolCalls)} | ${t.failures} | ` +
           `${ms(t.totalMs)} | ${hms(t.firstAt)} | ${hms(t.lastAt)} | ${(t.turns ?? []).join(',') || '-'} |`,
       )
+    }
+    const note = capNote(toolDetail.length, Math.min(toolDetail.length, limit))
+    if (note) {
+      L.push('')
+      L.push(note)
     }
   }
   L.push('')
@@ -142,13 +159,18 @@ export function renderReport(record, opts = {}) {
     L.push('')
     L.push(`| # | 时间 | 轮次 | 结果 | 耗时 | 命令 |`)
     L.push(`| --- | --- | --- | --- | --- | --- |`)
-    allCmds.forEach((c, i) => {
+    cap(allCmds, limit).forEach((c, i) => {
       const mark = c.ok === true ? '✅ 0' : c.ok === false ? '❌ 非 0' : '❔ 未知'
       L.push(
         `| ${i + 1} | ${hms(c.at)} | ${c.turn} | ${mark} | ${c.durationMs ? ms(c.durationMs) : '—'} | ` +
           `\`${firstLines(c.command, 1, 110)}\` |`,
       )
     })
+    const note = capNote(allCmds.length, Math.min(allCmds.length, limit))
+    if (note) {
+      L.push('')
+      L.push(note)
+    }
   }
   L.push('')
 
@@ -173,10 +195,15 @@ export function renderReport(record, opts = {}) {
   else {
     L.push(`| 文件（完整路径） | 方式 | 次数 | 末次时间 | 涉及轮次 |`)
     L.push(`| --- | --- | --- | --- | --- |`)
-    for (const f of modifiedFiles) {
+    for (const f of cap(modifiedFiles, limit)) {
       L.push(
         `| \`${f.path}\` | ${opLabel(f.ops)} | ${f.count} | ${hms(f.lastAt)} | ${(f.turns ?? []).join(',') || '-'} |`,
       )
+    }
+    const note = capNote(modifiedFiles.length, Math.min(modifiedFiles.length, limit))
+    if (note) {
+      L.push('')
+      L.push(note)
     }
   }
   L.push('')
@@ -186,8 +213,13 @@ export function renderReport(record, opts = {}) {
   else {
     L.push(`| 文件（完整路径） | 次数 | 末次时间 | 涉及轮次 |`)
     L.push(`| --- | --- | --- | --- |`)
-    for (const f of readFiles) {
+    for (const f of cap(readFiles, limit)) {
       L.push(`| \`${f.path}\` | ${f.count} | ${hms(f.lastAt)} | ${(f.turns ?? []).join(',') || '-'} |`)
+    }
+    const note = capNote(readFiles.length, Math.min(readFiles.length, limit))
+    if (note) {
+      L.push('')
+      L.push(note)
     }
   }
   L.push('')
@@ -212,7 +244,7 @@ export function renderReport(record, opts = {}) {
     L.push('')
     L.push(`| # | 时间 | 轮次 | 类型 | 结论 | 耗时 | 命令 |`)
     L.push(`| --- | --- | --- | --- | --- | --- | --- |`)
-    allTests.forEach((x, i) => {
+    cap(allTests, limit).forEach((x, i) => {
       const mark =
         x.passed === true ? '✅ 通过'
         : x.passed === false ? '❌ 未通过'
@@ -223,6 +255,11 @@ export function renderReport(record, opts = {}) {
       )
       if (x.note) L.push(`| | | | | | | ${x.note} |`)
     })
+    const note = capNote(allTests.length, Math.min(allTests.length, limit))
+    if (note) {
+      L.push('')
+      L.push(note)
+    }
   }
   L.push('')
 
@@ -234,11 +271,15 @@ export function renderReport(record, opts = {}) {
   } else {
     L.push(`共 **${T.failures}** 次失败，分布在 ${record.turns.filter((t) => t.failures.length).length} 个轮次。`)
     L.push('')
+    let failureRows = 0
     for (const t of record.turns) {
       if (!t.failures.length) continue
+      if (failureRows >= limit) break
       L.push(`### 轮次 ${t.turn}（${t.failures.length} 次）`)
       L.push('')
       for (const f of t.failures) {
+        if (failureRows >= limit) break
+        failureRows++
         L.push(
           `- **\`${f.tool}\`** · \`${f.kind}\` · ${hms(f.at)}` +
             `${f.durationMs ? ` · ${ms(f.durationMs)}` : ''}` +
@@ -248,6 +289,11 @@ export function renderReport(record, opts = {}) {
         if (f.message) L.push(`  - 说明：${firstLines(f.message, 1, 200)}`)
         L.push(`  - 事件 seq：${f.seq}`)
       }
+      L.push('')
+    }
+    const failNote = capNote(T.failures, failureRows)
+    if (failNote) {
+      L.push(failNote)
       L.push('')
     }
     L.push(`### 失败原因归类`)
@@ -274,12 +320,21 @@ export function renderReport(record, opts = {}) {
     L.push('')
     L.push(`这些调用以非 0 退出，但退出码很可能是管道/环境的副产物而非真实失败，故单列。`)
     L.push('')
+    let suspectRows = 0
     for (const t of record.turns) {
       for (const f of t.suspects) {
+        if (suspectRows >= limit) break
+        suspectRows++
         L.push(`- 轮次 ${t.turn} · **\`${f.tool}\`** · \`${f.kind}\``)
         if (f.command) L.push(`  - 命令：\`${f.command}\``)
         if (f.message) L.push(`  - 输出：${firstLines(f.message, 1, 160)}`)
       }
+      if (suspectRows >= limit) break
+    }
+    const suspectNote = capNote(T.suspects, suspectRows)
+    if (suspectNote) {
+      L.push('')
+      L.push(suspectNote)
     }
     L.push('')
   }

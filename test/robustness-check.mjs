@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readSessionLog, listSessions, readProjectionCache } from '../core/session-log.mjs'
 import { collectWorkRecord } from '../core/collect.mjs'
+import { HOME } from './_home.mjs'
 
 let pass = 0
 let fail = 0
@@ -30,7 +31,6 @@ const check = (name, cond, extra = '') => {
   }
 }
 
-const HOME = process.env.DSH_HOME || 'E:\\tools\\dsh'
 const MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
 
 // 挑一个体量适中的真实会话

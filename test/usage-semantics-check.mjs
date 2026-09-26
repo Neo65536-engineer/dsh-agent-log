@@ -5,8 +5,8 @@
  */
 import { listSessions, readSessionLog, readProjectionCache } from '../core/session-log.mjs'
 import { isLiveSession, splitDiffs } from './_live.mjs'
+import { HOME } from './_home.mjs'
 
-const HOME = process.env.DSH_HOME || 'E:\\tools\\dsh'
 let sumHits = 0
 let maxHits = 0
 let n = 0

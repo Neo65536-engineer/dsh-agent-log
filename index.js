@@ -37,6 +37,8 @@ const TRACKED_MODULES = [
   'core/session-log.mjs',
   'core/collect.mjs',
   'core/render.mjs',
+  'core/html.mjs',
+  'core/time.mjs',
   'core/period.mjs',
 ]
 
@@ -342,6 +344,31 @@ const TOOL = {
 /** apply() 里注入的日志器；模块级 execute 需要它来报陈旧模块。 */
 let ctxLog = null
 
+// ------------------------------------------------------------------ 重复注册防护
+//
+// 同一个插件被加载两次，唯一会**直接崩掉整个应用**的动作是向 webServer 重复注册
+// 同一条路由（社区里踩过：市场安装与手写安装器各注册一次 → 启动崩溃）。
+// 早先只能靠文档叮嘱用户"二选一"，那是把崩溃风险交给用户去记 —— 这里在插件侧兜住。
+//
+// 按 **webServer 实例**记账（WeakMap），而不是按进程记账：
+//   - 真的双份加载时，两份拿到的 webServer 是同一个单例 → 第二份被挡住，不崩；
+//   - 同一个进程里对不同的 webServer 实例（测试里的假 ctx）注册，各算各的，互不影响。
+const routeRegistry = new WeakMap()
+
+/** @returns {boolean} 这次注册是否由我拿到（false = 该实例上已经有同路径路由了）。 */
+function claimRoute(webServer, path) {
+  const key = typeof webServer === 'object' && webServer !== null ? webServer : null
+  if (!key) return true
+  let paths = routeRegistry.get(key)
+  if (!paths) {
+    paths = new Set()
+    routeRegistry.set(key, paths)
+  }
+  if (paths.has(path)) return false
+  paths.add(path)
+  return true
+}
+
 // ------------------------------------------------------------------ 插件入口
 
 export function apply(ctx, config = {}) {
@@ -369,6 +396,11 @@ export function apply(ctx, config = {}) {
     const webServer = webCtx.get('webServer')
     if (!webServer?.register) return
     const route = config.route ?? '/plugins/dsh-agent-log/report'
+    // 双份加载时第二份到不了这里 —— 重复注册同一条路由会让 webServer 崩掉。
+    if (!claimRoute(webServer, route)) {
+      log('route already registered on this webServer; skipping duplicate registration:', route)
+      return
+    }
     webCtx.effect(
       () =>
         webServer.register({

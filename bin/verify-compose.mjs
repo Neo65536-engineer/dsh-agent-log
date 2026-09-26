@@ -19,6 +19,7 @@ import { readFileSync, existsSync, mkdirSync, copyFileSync, rmSync, readdirSync 
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
+import { homedir } from 'node:os'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_DIR = resolve(here, '..')
@@ -30,8 +31,14 @@ const val = (f, d) => {
   return i >= 0 && i + 1 < argv.length ? argv[i + 1] : d
 }
 
-const DSH_HOME = process.env.DSH_HOME || 'E:\\tools\\dsh'
-const PROFILE = val('--profile', process.env.DSH_PROFILE || 'desktop')
+// DSH home：显式 --home → $DSH_HOME → $DSH_PROFILE_DIR/../.. → ~/.dsh。
+// 不写死任何机器路径 —— 早先这里是 `|| 'E:\\tools\\dsh'`。
+const DSH_HOME =
+  val('--home', null) ||
+  process.env.DSH_HOME?.trim() ||
+  (process.env.DSH_PROFILE_DIR?.trim() ? resolve(process.env.DSH_PROFILE_DIR.trim(), '..', '..') : null) ||
+  join(homedir(), '.dsh')
+const PROFILE = val('--profile', process.env.DSH_PROFILE?.trim() || 'desktop')
 const SRC = join(DSH_HOME, 'profiles', PROFILE)
 const TMP_NAME = '_composeverify'
 const TMP = join(DSH_HOME, 'profiles', TMP_NAME)
