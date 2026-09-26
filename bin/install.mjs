@@ -130,8 +130,18 @@ const ok = (msg) => console.log(`  ${c.ok('✓')} ${msg}`)
 // 现在的规则与 DSH 自身一致：显式参数 → $DSH_HOME → $DSH_PROFILE_DIR/../.. → ~/.dsh，
 // 并且必须真的是一个 DSH home（含 profiles/ 或 sessions/）。推断不出来就报错，绝不猜。
 function resolveHome(explicit) {
+  // 显式 --home 不许静默降级：打错一个字（D:\typo）时，回落到别的 home 会**改错 profile**，
+  // 而用户看到的是"预检通过"。回退只对隐式候选有意义 —— 这条规则 bin/worklog.mjs 早就有了。
+  if (explicit) {
+    const dir = resolve(explicit)
+    if (existsSync(join(dir, 'profiles')) || existsSync(join(dir, 'sessions'))) return { dir, from: '--home' }
+    fail(
+      `--home 指向的目录不像 DSH home：${dir}`,
+      '既没有 profiles/ 也没有 sessions/。请检查路径（这里不会替你回落到别的 home，那会改错 profile）',
+    )
+    return null
+  }
   const cands = []
-  if (explicit) cands.push({ dir: explicit, from: '--home' })
   if (process.env.DSH_HOME?.trim()) cands.push({ dir: process.env.DSH_HOME.trim(), from: '$DSH_HOME' })
   if (process.env.DSH_PROFILE_DIR?.trim()) {
     cands.push({ dir: resolve(process.env.DSH_PROFILE_DIR.trim(), '..', '..'), from: '$DSH_PROFILE_DIR/../..' })
@@ -180,7 +190,10 @@ function resolveProfile(home, explicit) {
 
 // --home 可指向一个沙箱目录，用于在不碰真实环境的前提下演练安装/回滚。
 const HOME_RES = resolveHome(val('--home', null))
-const DSH_HOME = HOME_RES?.dir ?? resolve(val('--home', null) ?? process.env.DSH_HOME?.trim() ?? join(homedir(), '.dsh'))
+// 显式 --home 不合格时**直接退出**：继续走下去会用同一个错路径（下面原来还有一处
+// `?? val('--home')` 兜底），而预检照样显示"通过"，用户复制回显命令加 --apply 就写错了地方。
+if (val('--home', null) && !HOME_RES) process.exit(2)
+const DSH_HOME = HOME_RES?.dir ?? resolve(process.env.DSH_HOME?.trim() ?? join(homedir(), '.dsh'))
 const PROFILE_RES = resolveProfile(DSH_HOME, val('--profile', null))
 const PROFILE = PROFILE_RES.name
 const PROFILE_DIR = join(DSH_HOME, 'profiles', PROFILE ?? '.unresolved-profile')
@@ -265,17 +278,20 @@ if (ROLLBACK) {
 console.log(c.b('一、插件本体自检'))
 
 /**
- * 必需文件分两档 —— 因为两种协议真正需要的东西不一样：
- *   - `file:` 只要 **package.json**。pnpm 会把 `files` 白名单里的内容复制进去；
- *     其余文件在源目录里存在与否，对安装结果没有影响（现实里"下载包"就常被清理过）。
- *   - `link:` 还要求 index.js / client.js / cordis.patch.yml / core/* 都在源目录里，
- *     因为 profile 是**直接解析到这个目录**的，缺一个就是运行时炸。
+ * 运行时必需文件 —— **两种协议一视同仁**。
  *
- * 早先这里不分档，于是对一个缺文件的拷贝跑 `--apply --file` 会被预检拦住，
- * 而那个缺失跟这次安装是否成功毫无关系。
+ * 早先这里分两档：`file:` 只查 `package.json`，理由是"pnpm 会按 files 白名单复制，
+ * 源目录无需完整"。**那个理由是错的**：`files` 决定的是"装什么"，
+ * 它**不会**把源目录里缺失的文件补出来 —— pnpm 复制的是源目录里实际存在的东西，
+ * 而装好后的 `node_modules/<pkg>` 是唯一的运行时来源。于是缺 `index.js` 的源目录能一路
+ * 走到"已就位"，DSH 启动时 `resolveBundleDir` 找不到 `./cordis.patch.yml`，
+ * 这个 bundle 被**静默跳过** —— 正是本项目最忌讳的"装上了、没报错、就是不工作"。
+ *
+ * 清单本身也漏过一项：`core/period.mjs`（`bin/worklog.mjs` 顶层就 import 它，
+ * 缺了它离线 CLI 直接 `ERR_MODULE_NOT_FOUND`，而预检会说"通过"）。
  */
-const REQUIRED_ALWAYS = ['package.json']
-const REQUIRED_FOR_LINK = [
+const REQUIRED = [
+  'package.json',
   'index.js',
   'client.js',
   'cordis.patch.yml',
@@ -283,24 +299,13 @@ const REQUIRED_FOR_LINK = [
   'core/collect.mjs',
   'core/render.mjs',
   'core/html.mjs',
+  'core/period.mjs',
   'core/time.mjs',
 ]
 
-
-for (const rel of REQUIRED_ALWAYS) {
+for (const rel of REQUIRED) {
   if (existsSync(join(PLUGIN_DIR, rel))) ok(`${rel}`)
-  else fail(`缺少 ${rel}`)
-}
-if (MODE === 'link') {
-  for (const rel of REQUIRED_FOR_LINK) {
-    if (existsSync(join(PLUGIN_DIR, rel))) ok(`${rel}`)
-    else fail(`缺少 ${rel}`, 'link: 协议下 profile 直接解析这个目录，缺文件会在运行时才炸')
-  }
-} else {
-  const missing = REQUIRED_FOR_LINK.filter((rel) => !existsSync(join(PLUGIN_DIR, rel)))
-  if (missing.length) {
-    console.log(c.dim(`  · file: 协议：不检查 ${missing.join('、')}（安装时会按 files 白名单复制，源目录无需完整）`))
-  }
+  else fail(`缺少 ${rel}`, '装好后这是唯一的运行时来源，缺文件不会在安装时暴露，只会在运行时静默失效')
 }
 
 let manifest = null

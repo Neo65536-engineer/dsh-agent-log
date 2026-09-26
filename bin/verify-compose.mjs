@@ -12,10 +12,10 @@
  * 组合出来的结果与真实 profile 等价，从而在不重启的前提下验证：
  * cordis.patch.yml 是否合法、bundle 是否被识别、插件是否真的进了组合树。
  *
- *   node bin/verify-compose.mjs              验证 desktop（默认）
+ *   node bin/verify-compose.mjs              自动推断 profile（$DSH_PROFILE → 唯一的 → desktop）
  *   node bin/verify-compose.mjs --profile web
  */
-import { readFileSync, existsSync, mkdirSync, copyFileSync, rmSync, readdirSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, copyFileSync, rmSync, readdirSync, statSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
@@ -38,7 +38,30 @@ const DSH_HOME =
   process.env.DSH_HOME?.trim() ||
   (process.env.DSH_PROFILE_DIR?.trim() ? resolve(process.env.DSH_PROFILE_DIR.trim(), '..', '..') : null) ||
   join(homedir(), '.dsh')
-const PROFILE = val('--profile', process.env.DSH_PROFILE?.trim() || 'desktop')
+/**
+ * profile 推断：`--profile` → `$DSH_PROFILE` → 唯一的 profile → 存在 desktop → 报错列候选。
+ *
+ * **不允许写死 `'desktop'`**：早先这里是 `process.env.DSH_PROFILE?.trim() || 'desktop'`，
+ * 在没有 desktop profile 的机器上必失败；而且它和 `bin/install.mjs` 刚立下的
+ * 「绝不替用户猜一个 profile」是同一条规矩 —— 那份规矩当时只改了安装器。
+ */
+function resolveProfile(home) {
+  const explicit = val('--profile', null)
+  if (explicit) return explicit
+  if (process.env.DSH_PROFILE?.trim()) return process.env.DSH_PROFILE.trim()
+  const root = join(home, 'profiles')
+  const names = existsSync(root)
+    ? readdirSync(root).filter((n) => {
+        try { return statSync(join(root, n)).isDirectory() && existsSync(join(root, n, 'package.json')) } catch { return false }
+      })
+    : []
+  if (names.length === 1) return names[0]
+  if (names.includes('desktop')) return 'desktop'
+  console.error(`推断不出 profile。候选：${names.join('、') || '(无)'}。请用 --profile <name> 指定。`)
+  process.exit(2)
+}
+
+const PROFILE = resolveProfile(DSH_HOME)
 const SRC = join(DSH_HOME, 'profiles', PROFILE)
 const TMP_NAME = '_composeverify'
 const TMP = join(DSH_HOME, 'profiles', TMP_NAME)

@@ -27,13 +27,35 @@ export function readSessionLog(file) {
   }
   const events = []
   const damaged = []
-  for (let k = 0; k < offsets.length; k++) {
-    const end = k + 1 < offsets.length ? offsets[k + 1] : undefined
-    let text
-    try {
-      text = zstdDecompressSync(buf.subarray(offsets[k], end)).toString('utf8')
-    } catch (e) {
-      damaged.push({ frame: k, offset: offsets[k], error: e.message })
+  let k = 0
+  while (k < offsets.length) {
+    // 从这一帧的起点出发，先试**最近的**魔数边界；解不开就并上下一帧再试。
+    //
+    // 为什么要重试（实测真机缺陷）：zstd 对不可压缩内容用 raw block **原样存储**，
+    // 所以"明文里恰好有 28 B5 2F FD"这几个字节会出现在**压缩流内部**，被上面的
+    // 魔数扫描当成新帧起点 —— 真帧被切成两段，前半段 `unexpected end of file`、
+    // 后半段 `Unsupported frame parameter`，**两段都解不出**。
+    // 复现：一帧 18 条事件 → events=0、damaged=2；而整块解一次是好的（24 行）。
+    // 后果不是"少几条"，而是报告结论从「任务完成」翻转成「还没有任务轮次」。
+    //
+    // 本机 55 份真实日志 0/55 命中，所以这是"机制成立、真实数据未命中"；
+    // 但只要命中就是静默错到底，不能只靠运气。
+    let text = null
+    let next = -1
+    for (let j = k + 1; j <= offsets.length; j++) {
+      const end = j < offsets.length ? offsets[j] : undefined
+      try {
+        text = zstdDecompressSync(buf.subarray(offsets[k], end)).toString('utf8')
+        next = j
+        break
+      } catch {
+        /* 这个边界不对，并上下一帧再试 */
+      }
+    }
+    if (text === null) {
+      // 所有边界都解不开：这一帧真的坏了。记下来（调用方必须把它报给用户）。
+      damaged.push({ frame: k, offset: offsets[k], error: 'no boundary decodes' })
+      k += 1
       continue
     }
     for (const line of text.split('\n')) {
@@ -45,6 +67,7 @@ export function readSessionLog(file) {
         /* 跨帧残行 / 非 JSON 行：跳过，不致命 */
       }
     }
+    k = next
   }
   return { events, frames: offsets.length, damaged }
 }
@@ -196,11 +219,20 @@ export function toolOutcome(resultEvent, ctx = {}) {
  */
 const ANSI_CSI = /\u001b\[[0-9;?]*[ -\/]*[@-~]/g
 const ANSI_OSC = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g
+/**
+ * 半截序列（`ESC[38;2;140;140` 后面没有终止字节）。
+ *
+ * 为什么会遇到：工具输出本身可能在转义序列中间被截断（进程被杀、输出被切）。
+ * 上面两条只匹配**完整**序列，漏掉的半截会原样进报告 —— 人看到一串 `[38;2;140;140`，
+ * 而 ESC 不可见，读起来像乱码。这里把残留的 ESC 连同它的参数一起清掉。
+ */
+const ANSI_LEFTOVER = /\u001b(?:\[[0-9;?]*[ -/]*)?/g
 
 export function stripAnsi(text) {
   return String(text ?? '')
     .replace(ANSI_OSC, '')
     .replace(ANSI_CSI, '')
+    .replace(ANSI_LEFTOVER, '')
 }
 
 export function firstLines(text, n = 2, width = 160) {

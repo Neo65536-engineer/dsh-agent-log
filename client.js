@@ -283,13 +283,23 @@ window.__ModuleLoader__.load({
         const q = target ? `?format=json&sessionId=${encodeURIComponent(target)}` : '?format=json'
         fetch(`${ROUTE}${q}`, { signal: ac.signal })
           .then(async (r) => {
-            if (!r.ok) throw new Error(`HTTP ${r.status}`)
-            return r.json()
+            if (r.ok) return r.json()
+            // 宿主把**真正的原因**放在 body 里（`{error:"找不到会话 xxx"}` / `{error:"DSH home not found"}`）。
+            // 早先这里只读 status，于是一律显示「HTTP 500」——
+            // 用户看不到"是 home 找不到"还是"是会话 id 打错了"，只能去猜。
+            let detail = ''
+            try {
+              const body = await r.json()
+              if (body?.error) detail = String(body.error)
+            } catch { /* 不是 JSON（例如 HTML 错误页）就退回状态码 */ }
+            throw new Error(detail ? `HTTP ${r.status}：${detail}` : `HTTP ${r.status}`)
           })
           .then((data) => { if (alive) setState({ status: 'ready', data, error: null }) })
           .catch((e) => {
             if (alive && e?.name !== 'AbortError') {
-              setState({ status: 'error', data: null, error: String(e?.message ?? e) })
+              // **保留上一次成功的数据**：一次瞬时失败（宿主重启、自动刷新撞上写入）不该把
+              // 已经读出来的整份报告清空。下面会挂一条错误横幅，同时继续显示旧快照。
+              setState((s) => ({ status: 'error', data: s.data, error: String(e?.message ?? e) }))
             }
           })
         return () => { alive = false; ac.abort() }
@@ -380,13 +390,23 @@ window.__ModuleLoader__.load({
             `这会让「工具 / 命令 / 文件」页签恒为空。请重启 DSH。`)
         : null
 
+      // 帧损坏必须挂在最上面：它会让数字偏小、甚至把"有轮次"显示成"没有轮次"，
+      // 而报告正文里的其它内容看起来一切正常 —— 不显眼就等于没提示。
+      const damaged = view.diagnostics?.damagedFrames ?? 0
+      const damageBar = damaged > 0
+        ? h('div', { className: 'worklog-err', key: 'damaged' },
+            `⚠️ 会话日志有 ${damaged} 个 zstd 帧无法解析（共 ${view.diagnostics?.frames ?? '?'} 帧）。` +
+            `下面的数字可能偏小，极端情况下结论会与实际相反。`)
+        : null
+
       const dlNote = dl ? h('div', { className: 'worklog-dl', key: 'dl' }, dl) : null
 
       if (state.status === 'loading' && !T) {
         return h('div', { className: 'worklog-root' }, [h(StyleOnce, { key: 's' }), header, who, dlNote,
           h('div', { className: 'worklog-empty', key: 'b' }, '正在解析会话日志…')])
       }
-      if (state.status === 'error') {
+      if (state.status === 'error' && !T) {
+        // 一次都没成功过：没有旧数据可留，只能整屏报错（此时必须把宿主给的原因显示全）
         return h('div', { className: 'worklog-root' }, [h(StyleOnce, { key: 's' }), header, who, dlNote,
           h('div', { className: 'worklog-body', key: 'b' },
             h('div', { className: 'worklog-err' }, `读取失败：${state.error}`))])
@@ -421,11 +441,19 @@ window.__ModuleLoader__.load({
       else if (tab === 'turns') bodyEl = Turns(view)
       else bodyEl = Overview(T, view)
 
+      // 刷新失败但手里还有上一次成功的数据：挂横幅，**继续显示旧快照**，而不是清屏
+      const errBar = state.status === 'error'
+        ? h('div', { className: 'worklog-err', key: 'err' },
+            `刷新失败：${state.error}（下面是上一次成功读取的报告，可能已过期）`)
+        : null
+
       return h('div', { className: 'worklog-root' }, [
         h(StyleOnce, { key: 's' }),
         header,
         who,
         staleBar,
+        damageBar,
+        errBar,
         dlNote,
         tabBar,
         h('div', { className: 'worklog-body', key: 'b' }, bodyEl),
@@ -434,7 +462,10 @@ window.__ModuleLoader__.load({
 
     // ------------------------------------------------------------ 总览
     function Overview(T, view) {
-      const done = T.completed + T.aborted + T.interrupted
+      // 轮次完成率**不在这里算**：读宿主算好的 T.completionRate（唯一算法出口，见 core/collect.mjs）。
+      // 早先面板用「已收尾轮次」当分母、markdown/HTML 用「全部轮次」，
+      // 同一份数据能同时显示成 100% 和 50%（54 个会话里 4 个对不上）。
+      const rate = T.completionRate === null || T.completionRate === undefined ? '—' : `${T.completionRate}%`
       const first = view.turns[0]?.startedAt
       const last = view.turns[view.turns.length - 1]?.endedAt
       const inProgress = view.turns.some((t) => !t.endedAt)
@@ -466,7 +497,11 @@ window.__ModuleLoader__.load({
             ['命令执行', fmt(T.commands)],
             ['失败次数', h('span', { className: T.failures ? 'worklog-bad' : 'worklog-ok' }, fmt(T.failures))],
             ['疑似失败', fmt(T.suspects)],
-            ['测试', `${T.tests}（通过 ${T.testsPassed} / 失败 ${T.testsFailed}）`],
+            // 三态必须给全：只写「通过/失败」时，未判定的那些既不算通过也不算失败，
+            // N 与两者之和对不上（实测 9 次测试显示成「通过 4 / 失败 1」），
+            // 读者只会认为统计错了。报告第五节本来就报三态，总览不能退化。
+            ['测试', `${T.tests}（通过 ${T.testsPassed} / 失败 ${T.testsFailed}` +
+              ((T.testsUnknown ?? 0) > 0 ? ` / 未判定 ${T.testsUnknown}` : '') + '）'],
             ['读文件', fmt(T.filesRead)],
             ['写/改文件', `${T.filesWritten} + ${T.filesEdited}`],
             ['输入 Token（未缓存）', fmt(T.inputTokens)],
@@ -486,7 +521,7 @@ window.__ModuleLoader__.load({
         ]),
         h('div', { className: 'worklog-row', key: 'r2' }, [
           h('span', { className: 'worklog-name', key: 'a' }, '轮次'),
-          h('span', { className: 'worklog-num', key: 'b' }, pct(T.completed, done)),
+          h('span', { className: 'worklog-num', key: 'b' }, rate),
         ]),
       ])
     }

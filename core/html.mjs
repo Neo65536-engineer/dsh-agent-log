@@ -14,6 +14,10 @@ import { stamp } from './time.mjs'
 
 const esc = (s) =>
   String(s)
+    // C0 控制字符（保留 \t \n \r）：会话日志里可能有 NUL / 半截 ESC，
+    // 它们不影响 HTML 结构（< > 已转义，不会被当成标签），但裸 NUL 会破坏
+    // 某些查看器与打印链路，ESC 则让源码看起来像乱码。不是在防注入 —— 防注入靠下面两条。
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -27,13 +31,22 @@ function inline(s) {
 
 const isTableRow = (l) => /^\s*\|.*\|\s*$/.test(l)
 const isTableSep = (l) => /^\s*\|[\s:|-]+\|\s*$/.test(l)
+
+/**
+ * 把一行表格拆成单元格。
+ *
+ * 必须按**未转义**的 `|` 切分：render.mjs 的 `cell()` 会把单元格内容里的 `|`
+ * 写成 `\|`（命令里的管道是常态）。早先这里无条件 `.split('|')`，
+ * 于是一条带管道的命令会被拆成两格，渲染出 `<td>` 比 `<th>` 多的坏行。
+ * 实测 40 个会话 428 行受影响。
+ */
 const cells = (l) =>
   l
     .trim()
     .replace(/^\|/, '')
     .replace(/\|$/, '')
-    .split('|')
-    .map((c) => c.trim())
+    .split(/(?<!\\)\|/)
+    .map((c) => c.trim().replace(/\\\|/g, '|'))
 
 /** Markdown → HTML 片段。 */
 export function markdownToHtml(md) {

@@ -117,6 +117,15 @@ console.log('\n=== C. 代码里不得把某台机器的绝对路径当默认值 
   const installer = readFileSync(INSTALLER, 'utf8')
   check('没有 `DSH_HOME || <绝对路径>` 式默认值', !/process\.env\.DSH_HOME\s*\|\|\s*['"]/.test(installer))
   check("没有 `DSH_PROFILE || 'desktop'` 式默认值", !/process\.env\.DSH_PROFILE\s*\|\|\s*['"]/.test(installer))
+  // 这条规矩必须扫**全部** bin/*.mjs，不能只看安装器。
+  // 实测漏网：`bin/verify-compose.mjs` 里是 `process.env.DSH_PROFILE?.trim() || 'desktop'` ——
+  // 带 `?.trim()` 所以连上面的正则都匹配不到，在没有 desktop profile 的机器上必失败。
+  const profileDefaultOffenders = files.filter((rel) => {
+    const code = stripped(rel)
+    return /DSH_PROFILE[^\n]*\|\|\s*['"]desktop['"]/.test(code)
+  })
+  check('全部 bin/*.mjs 都没有把 desktop 写死成 profile 默认值',
+    profileDefaultOffenders.length === 0, profileDefaultOffenders.join(', '))
   // 测试文件同样不许写死（早先 7 个测试文件都有 `|| 'E:\\tools\\dsh'`）
   const testFiles = readdirSync(join(root, 'test')).filter((f) => f.endsWith('.mjs'))
   const offenders = testFiles.filter((f) => {

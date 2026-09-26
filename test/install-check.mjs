@@ -248,11 +248,48 @@ check('覆盖后依赖变成 file:', String(JSON.parse(readFileSync(B.PROFILE_PK
 
 // ---------------------------------------------------------------- 6. 异常路径
 console.log('\n=== 6. 异常路径 ===')
+
+// 6a 显式 --home 不合格：必须**直接失败且不回退**。
+// 这条断言原来写的是「回退到真实 home 之后再报 profile 不存在」——那正是被修掉的行为：
+// 用户打错一个字，安装器会去改**另一个** profile，而预检照样显示"通过"。
+// 同一个缺陷也污染过本文件下面的回滚用例（`--home <沙箱>/empty-home` 其实不存在，
+// 于是它静默回退到真实 $DSH_HOME 去跑 —— 测试自己都没意识到跑出了沙箱）。
 const badHome = join(sandbox, 'no-such-home')
 const bad = runInstaller(['--home', badHome, '--profile', 'nope'])
-check('profile 不存在时预检失败（非 0）', bad.code !== 0, `code=${bad.code}`)
-check('给出可读原因', /profile 目录不存在|profile .* 不存在/.test(bad.stdout),
+check('--home 不合格时预检失败（非 0）', bad.code !== 0, `code=${bad.code}`)
+check('说明是 --home 的问题，并明确不会回退到别的 home',
+  /--home 指向的目录不像 DSH home/.test(bad.stdout) && /不会替你回落/.test(bad.stdout),
   String(bad.stdout).slice(-300))
+check('确实没有回退（输出里不该出现真实 home 的 profile 推断）',
+  !/已装着本插件的那个 profile|唯一的 profile|来自 \$DSH_HOME/.test(bad.stdout),
+  String(bad.stdout).slice(-300))
+
+// 6b home 合格但 profile 不存在：预检失败并给出可读原因
+const goodEmptyHome = join(sandbox, 'empty-home')
+mkdirSync(join(goodEmptyHome, 'profiles'), { recursive: true })
+const badProfile = runInstaller(['--home', goodEmptyHome, '--profile', 'nope'])
+check('profile 不存在时预检失败（非 0）', badProfile.code !== 0, `code=${badProfile.code}`)
+check('给出可读原因', /profile 目录不存在|profile .* 不存在/.test(badProfile.stdout),
+  String(badProfile.stdout).slice(-300))
+
+// 6c 源目录缺运行时文件：**两种协议都必须拦住**。
+// 早先 file: 分支故意跳过这个检查，理由注释是「pnpm 会按 files 白名单复制，源目录无需完整」——
+// 那个理由是错的：files 决定"装什么"，不会把源目录里缺失的文件补出来；装好后的
+// node_modules/<pkg> 才是唯一运行时来源。于是缺 index.js 的包能一路走到「已就位」，
+// 而 DSH 启动时静默跳过这个 bundle —— 正是本项目最忌讳的"装上了、没报错、就是不工作"。
+// core/period.mjs 则是清单本身漏掉的一项（bin/worklog.mjs 顶层 import 它）。
+const broken = join(sandbox, 'broken-pkg')
+cpSync(dl, broken, { recursive: true })
+rmSync(join(broken, 'index.js'))
+rmSync(join(broken, 'core', 'period.mjs'))
+const pkgBeforeBroken = readFileSync(A.PROFILE_PKG, 'utf8')
+const brokenPre = runInstaller(['--home', A.HOME, '--profile', 'testprofile', '--source-dir', broken])
+check('缺 index.js 时预检失败（file: 协议一样拦）', brokenPre.code !== 0, `code=${brokenPre.code}`)
+check('点名缺了 index.js', /缺少 index\.js/.test(brokenPre.stdout), String(brokenPre.stdout).slice(-400))
+check('也点名缺了 core/period.mjs', /缺少 core[\\/]period\.mjs/.test(brokenPre.stdout),
+  String(brokenPre.stdout).slice(-400))
+check('拦下之后 profile 配置一个字节都没动',
+  readFileSync(A.PROFILE_PKG, 'utf8') === pkgBeforeBroken)
 
 const rbNone = runInstaller(['--home', join(sandbox, 'empty-home'), '--profile', 'x', '--rollback'])
 check('没有备份时回滚安全失败', rbNone.code !== 0 || /没有找到任何备份/.test(rbNone.stdout),

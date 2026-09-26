@@ -457,7 +457,13 @@ console.log('\n--- 明细上限（防止长会话把上下文吃光）---')
     command: `echo ${i}`,
   }))
   const md = renderReport(T)
-  const rows = (md.match(/^\| \d+ \| \d{2}:\d{2}:\d{2} \|/gm) ?? []).length
+  // 计数**必须限定在命令段内**。早先用 `/^\| \d+ \| \d{2}:\d{2}:\d{2} \|/gm` 全文数，
+  // 而「五、测试是否通过」表的行形状与命令表一模一样（`| # | 时间 | …`），
+  // 于是样本会话里有几条测试就多算几行 —— 样本又是按 mtime 动态挑的（见文件上方 sample 的选法），
+  // 结果同一份代码同一台机器，20 分钟内先红（rows=83）后绿（rows=80）。
+  // 这正是本文件第 449 行注释说要避免的「数据依赖的断言」，只是当时没发现正则也漏了。
+  const cmdSection = md.split('## 三、运行了哪些命令')[1]?.split('## 四、')[0] ?? ''
+  const rows = (cmdSection.match(/^\| \d+ \| \d{2}:\d{2}:\d{2} \|/gm) ?? []).length
   check('命令明细被截断到上限（正好 N 行）', rows === DETAIL_LIMIT, `rows=${rows} limit=${DETAIL_LIMIT}`)
   check('截断时明确写出总条数与恢复办法',
     /明细过长/.test(md) && /共 \*\*500\*\*/.test(md) && /format: "json"/.test(md),

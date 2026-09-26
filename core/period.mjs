@@ -176,6 +176,20 @@ const shortPath = (p, root) => {
   return s || '.'
 }
 
+/**
+ * 被截断时必须写出来的那一行；没截断返回 null。
+ *
+ * 与 core/render.mjs 的 `capNote()` 同一原则：**列表被截断就必须说**。
+ * 早先这一节的三处截断（工具 >20、产出文件 >60、每轮产出 >8）全是静默的，
+ * 而单会话报告那边专门做了「只列前 N 条（共 M 条）」——
+ * 实测本机 37 个工具里静默丢掉 17 个、1248 个文件里静默只列 60 个，
+ * 读者会默认那张表是完整的。同一份插件里两套标准，比截断本身更糟。
+ */
+function capNote(total, shown, more = '') {
+  if (total <= shown) return null
+  return `> ⚠️ 明细过长，此处只列 ${more || '前'} **${shown}** 条（共 **${total}** 条）。`
+}
+
 /** 渲染日报 / 周报。granularity = 'daily' | 'weekly' | 'range' */
 export function renderPeriod(agg, opts = {}) {
   const { label = '工作报告', root = null, since = null, until = null } = opts
@@ -271,8 +285,14 @@ export function renderPeriod(agg, opts = {}) {
   const hist = [...totals.toolHistogram.entries()].sort((a, b) => b[1] - a[1])
   L.push(`| 工具 | 调用次数 | 占比 |`)
   L.push(`| --- | --- | --- |`)
-  for (const [k, v] of hist.slice(0, 20)) {
+  const SHOWN_TOOLS = 20
+  for (const [k, v] of hist.slice(0, SHOWN_TOOLS)) {
     L.push(`| \`${k}\` | ${v} | ${totals.toolCalls ? Math.round((v / totals.toolCalls) * 100) : 0}% |`)
+  }
+  const toolNote = capNote(hist.length, Math.min(hist.length, SHOWN_TOOLS), '前')
+  if (toolNote) {
+    L.push('')
+    L.push(toolNote)
   }
   L.push('')
 
@@ -283,8 +303,15 @@ export function renderPeriod(agg, opts = {}) {
     ...totals.filesWritten,
     ...totals.filesEdited,
   ]
-  if (produced.length === 0) L.push('_没有文件产出。_')
-  else for (const f of [...new Set(produced)].slice(0, 60)) L.push(`- \`${shortPath(f, root)}\``)
+  const producedList = [...new Set(produced)]
+  const SHOWN_FILES = 60
+  if (producedList.length === 0) L.push('_没有文件产出。_')
+  else for (const f of producedList.slice(0, SHOWN_FILES)) L.push(`- \`${shortPath(f, root)}\``)
+  const fileNote = capNote(producedList.length, Math.min(producedList.length, SHOWN_FILES), '前')
+  if (fileNote) {
+    L.push('')
+    L.push(fileNote)
+  }
   L.push('')
 
   // ---- 逐日明细
@@ -300,15 +327,19 @@ export function renderPeriod(agg, opts = {}) {
     for (const t of d.turns) {
       const mark = t.reason?.kind === 'completed' ? '✅' : t.reason?.kind === 'aborted' ? '⛔' : t.reason?.kind === 'interrupted' ? '⚠️' : '❔'
       const prompt = String(t.prompt ?? '').split('\n').map((x) => x.trim()).filter(Boolean)[0] ?? '(无)'
-      L.push(`- ${mark} **${prompt.slice(0, 70)}**`)
+      L.push(`- ${mark} **${prompt.length > 70 ? `${prompt.slice(0, 70)}…` : prompt}**`)
       L.push(
         `  - 工具 ${t.toolCalls.length} · 失败 ${t.failures.length} · 命令 ${t.commands.length} · ` +
           `读/写/改 ${t.filesRead.length}/${t.filesWritten.length}/${t.filesEdited.length} · 输出 ${n(t.usage?.outputTokens)} tok · ${ms(t.durationMs)}`,
       )
       if (t.filesWritten.length || t.filesEdited.length) {
-        for (const f of [...new Set([...t.filesWritten, ...t.filesEdited])].slice(0, 8)) {
+        const perTurn = [...new Set([...t.filesWritten, ...t.filesEdited])]
+        const SHOWN_PER_TURN = 8
+        for (const f of perTurn.slice(0, SHOWN_PER_TURN)) {
           L.push(`    - 产出 \`${shortPath(f, root)}\``)
         }
+        // 每轮内部的截断也要说：否则「这一轮只改了 8 个文件」会被当成事实
+        if (perTurn.length > SHOWN_PER_TURN) L.push(`    - …该轮共 ${perTurn.length} 个产出，此处只列前 ${SHOWN_PER_TURN} 个`)
       }
       const firstFail = t.failures[0]
       if (firstFail) L.push(`    - ⚠️ 首次失败：\`${firstFail.tool}\` ${firstFail.kind}${firstFail.command ? ` · ${firstFail.command.slice(0, 60)}` : ''}`)

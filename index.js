@@ -12,6 +12,7 @@
 
 import { existsSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { dirname, resolve, join, isAbsolute } from 'node:path'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { readSessionLog, listSessions, readProjectionCache } from './core/session-log.mjs'
 import { collectWorkRecord, rescoreRecord } from './core/collect.mjs'
@@ -116,11 +117,30 @@ function validateArgs(args) {
 
 // ------------------------------------------------------------------ 定位 DSH home
 
+/**
+ * 定位 DSH home。候选顺序与 DSH 自身一致：
+ *   显式参数 → `$DSH_HOME` → `$DSH_PROFILE_DIR/../..` → `~/.dsh`
+ *
+ * **`~/.dsh` 这一级不能省**（实测真机高危 bug）：
+ * 桌面版由启动器显式 `set DSH_HOME=<homeDir>` 才轮不到这里，但 `dsh web` 是用户
+ * 在普通 shell 里启动的 —— 官方解析顺序是 `显式配置 → $DSH_HOME → ~/.dsh`，
+ * 也就是说**没设过 DSH_HOME 的机器用默认 home 是正常形态**。而 `$DSH_PROFILE_DIR`
+ * 是 `dsh-shell-env` 注入给 **shell 子进程**的（它的文档原话是每个 shell 调用重建
+ * 该命名空间），**宿主进程里并没有**。于是早先的实现只认前两项 → 在默认安装的机器上
+ * 返回 null：`work_report` 抛「找不到 DSH home」、路由 500、侧边栏空白，整个插件不可用。
+ *
+ * 另外 6 处（bin/worklog.mjs、bin/verify-loaded.mjs、bin/verify-compose.mjs、
+ * bin/install.mjs、bin/dev-setup.mjs、test/_home.mjs）早就都带 `~/.dsh` 兜底，
+ * 唯独跑在宿主里的这一处没有 —— 这是**同类错误的最后一个漏网之处**。
+ */
 function detectHome(explicit) {
   const cands = [
     explicit,
     process.env.DSH_HOME,
     process.env.DSH_PROFILE_DIR ? resolve(process.env.DSH_PROFILE_DIR, '..', '..') : null,
+    process.env.USERPROFILE ? join(process.env.USERPROFILE, '.dsh') : null,
+    process.env.HOME ? join(process.env.HOME, '.dsh') : null,
+    join(homedir(), '.dsh'),
   ].filter(Boolean)
   for (const c of cands) if (existsSync(join(c, 'sessions'))) return c
   return null
@@ -288,21 +308,32 @@ const TOOL = {
         `磁盘上有更新的文件：${fresh.newer.map((n) => n.file).join('、')}。请重启 DSH，否则数字/文案可能与源码不符。`
       : null
 
+    // 帧损坏的警告必须放在**正文开头**，不能只在页脚带一句。
+    // 实测：一帧被魔数误切会让整帧事件消失，报告从「任务完成」翻转成「还没有任务轮次」，
+    // 而当时唯一的提示是文末一行小字 —— 读者先看到结论，根本走不到页脚。
+    const damageText = built.diagnostics.damagedFrames
+      ? `会话日志有 ${built.diagnostics.damagedFrames} 个 zstd 帧无法解析（共 ${built.diagnostics.frames} 帧）。` +
+        `下面的数字**可能偏小**，极端情况下会得出与实际相反的结论（例如实际有轮次却显示「还没有任务轮次」）。`
+      : null
+    const mdBanner = damageText ? `> ⚠️ **${damageText}**\n\n` : ''
+    const warnings = [staleText, damageText].filter(Boolean)
+    const mdFull = mdBanner + built.markdown
+
     const text = wantJson
       ? JSON.stringify(
-          { ...built.record, diagnostics, ...(staleText ? { warning: staleText } : {}) },
+          { ...built.record, diagnostics, ...(warnings.length ? { warning: warnings.join(' ') } : {}) },
           null,
           2,
         )
       : wantHtml
-        ? reportDocument(built.markdown, {
+        ? reportDocument(mdFull, {
             sessionId: built.sessionId,
             generatedAt: Date.now(),
             stale: fresh.stale,
             loadedAt: fresh.loadedAt,
             newer: fresh.newer.map((n) => n.file),
           })
-        : built.markdown +
+        : mdFull +
         (resolutionNote(built.resolvedBy, built.sessionId) ?? '') +
         (staleText ? `> ⚠️ ${staleText}\n` : '') +
         `\n> 解析自 ${built.diagnostics.frames} 个 zstd 帧 / ${built.diagnostics.events} 条事件` +
@@ -441,10 +472,16 @@ export function apply(ctx, config = {}) {
                 record: built.record,
               }
 
+              const damageBar = built.diagnostics.damagedFrames
+                ? `> ⚠️ **会话日志有 ${built.diagnostics.damagedFrames} 个 zstd 帧无法解析（共 ${built.diagnostics.frames} 帧），` +
+                  `下面的数字可能偏小，极端情况下结论会与实际相反。**\n\n`
+                : ''
+
               if (format === 'markdown') {
                 res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8' })
                 res.end(
-                  built.markdown +
+                  damageBar +
+                    built.markdown +
                     (resolutionNote(built.resolvedBy, built.sessionId) ?? '') +
                     (fresh.stale
                       ? `> ⚠️ 宿主加载的是旧版插件模块，请重启 DSH。\n`
@@ -456,7 +493,7 @@ export function apply(ctx, config = {}) {
                 // 面板的「下载」按钮走这条路：自包含、可打印的文档
                 res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
                 res.end(
-                  reportDocument(built.markdown, {
+                  reportDocument(damageBar + built.markdown, {
                     sessionId: built.sessionId,
                     generatedAt: Date.now(),
                     stale: fresh.stale,

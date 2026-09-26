@@ -7,7 +7,8 @@ import { flattenCommand } from './collect.mjs'
 import { hms, mdhm, stamp } from './time.mjs'
 
 const n = (x) => (x ?? 0).toLocaleString('en-US')
-const pct = (a, b) => (b > 0 ? `${Math.round((a / b) * 100)}%` : '—')
+const pct = (a, b) =>
+  Number.isFinite(a) && Number.isFinite(b) && b > 0 ? `${Math.round((a / b) * 100)}%` : '—'
 const ms = (v) => {
   if (!v) return '0s'
   const s = Math.round(v / 1000)
@@ -42,6 +43,18 @@ const DETAIL_LIMIT = 80
 export { DETAIL_LIMIT }
 
 const cap = (list, limit) => (list.length > limit ? list.slice(0, limit) : list)
+
+/**
+ * 表格单元格内容。
+ *
+ * 为什么必须过这一层（实测真机 bug）：命令里带 `|` 是常态（PowerShell 里尤其普遍），
+ * 而 markdown 表格用 `|` 分列 —— 未转义时该行会多出若干列，**整张表从此断掉**；
+ * HTML 导出由这份 markdown 转换而来，于是同一行 `<td>` 比 `<th>` 多。
+ * 实测 40 个会话里有 35 个、共 428 行列数错乱。
+ *
+ * 转义规则：单元格内容里的 `|` 写成 `\|`（core/html.mjs 的 `cells()` 按未转义的 `|` 切分）。
+ */
+const cell = (s) => String(s ?? '').replace(/\|/g, '\\|')
 
 /** 被截断时给出的一行说明；没截断返回 null。 */
 function capNote(total, shown, where = '`format: "json"`') {
@@ -87,11 +100,11 @@ export function renderReport(record, opts = {}) {
   L.push('')
   L.push(`| | |`)
   L.push(`| --- | --- |`)
-  L.push(`| 会话 | \`${record.sessionId}\` |`)
-  L.push(`| 工作目录 | \`${cwd ?? '-'}\` |`)
+  L.push(`| 会话 | \`${cell(record.sessionId)}\` |`)
+  L.push(`| 工作目录 | \`${cell(cwd ?? '-')}\` |`)
   L.push(`| 生成时间 | ${stamp(now)} |`)
   L.push(`| 结论 | **${verdict}** |`)
-  L.push(`| 权限档位 | sandbox=\`${record.permissions.sandbox ?? '-'}\` approval=\`${record.permissions.approval ?? '-'}\` |`)
+  L.push(`| 权限档位 | sandbox=\`${cell(record.permissions.sandbox ?? '-')}\` approval=\`${cell(record.permissions.approval ?? '-')}\` |`)
   L.push('')
 
   // ---------------------------------------------------------- 一、总览
@@ -101,17 +114,37 @@ export function renderReport(record, opts = {}) {
   L.push(`| --- | --- | --- | --- |`)
   L.push(`| 任务轮次 | ${T.turns} | 执行步数 | ${n(T.steps)} |`)
   L.push(`| 工具调用 | ${n(T.toolCalls)} | 失败次数 | **${T.failures}**（另有 ${T.suspects} 次疑似） |`)
-  L.push(`| 命令执行 | ${n(T.commands)} | 测试执行 | ${T.tests}（通过 ${T.testsPassed} / 失败 ${T.testsFailed}） |`)
+  // 测试三态：总览这一行也必须给全「未判定」。
+  // 早先只写「通过 A / 失败 B」，而未判定那部分既不计入 A 也不计入 B ——
+  // 于是 N 跟 A+B 对不上（实测某会话 9 次测试只显示「通过 4 / 失败 1」），
+  // 读者只能理解为统计错了。第五节本来就是三态，总览没理由退化成两态。
+  const testsUnknown = T.testsUnknown ?? 0
+  L.push(
+    `| 命令执行 | ${n(T.commands)} | 测试执行 | ${T.tests}（通过 ${T.testsPassed} / 失败 ${T.testsFailed}` +
+      (testsUnknown ? ` / 未判定 ${testsUnknown}` : '') +
+      `） |`,
+  )
   L.push(`| 读文件 | ${T.filesRead} | 写/改文件 | ${T.filesWritten} + ${T.filesEdited} |`)
   L.push(`| 涉及文件总数 | ${T.uniqueFilesTouched} | 模型重试 | ${T.retries} |`)
   L.push(`| 输入 Token（未缓存） | ${n(T.inputTokens)} | 输出 Token | ${n(T.outputTokens)} |`)
   L.push(`| 缓存读取 Token | ${n(T.cacheReadTokens)} | 推理 Token | ${n(T.reasoningTokens)} |`)
-  L.push(`| 缓存读取占比 | ${pct(T.cacheReadTokens, T.inputTokens + T.cacheReadTokens)} | 上下文压力峰值 | ${n(Math.max(0, ...record.turns.map((t) => t.usage?.maxTotalTokens ?? 0)))} |`)
+  // 上下文压力峰值用 reduce 而不是 `Math.max(0, ...turns.map(...))`：
+  // 展开运算符会把每个元素压成一个实参，参数数量有实现上限 ——
+  // 实测本机 Node v24 上 12.5 万轮就 `RangeError: Maximum call stack size exceeded`。
+  // 真实会话现在最多几十轮，但这是纯规模函数，没有理由留这个悬崖。
+  const peakContext = record.turns.reduce((m, t) => Math.max(m, t.usage?.maxTotalTokens ?? 0), 0)
+  L.push(`| 缓存读取占比 | ${pct(T.cacheReadTokens, T.inputTokens + T.cacheReadTokens)} | 上下文压力峰值 | ${n(peakContext)} |`)
   L.push(`| 权限询问 | ${T.approvalsAsked} | 被拒 | ${T.approvalsDenied} |`)
   L.push(`| 总耗时（轮次墙钟） | ${inProgress ? `${ms(T.durationMs)}（进行中，尚未收尾）` : ms(T.durationMs)} | 完成/中止/中断 | ${T.completed} / ${T.aborted} / ${T.interrupted}${inProgress ? '（进行中不计入）' : ''} |`)
   L.push('')
 
-  L.push(`**成功率**：工具调用 ${pct(T.toolCalls - T.failures, T.toolCalls)} · 轮次完成 ${pct(T.completed, T.turns)}`)
+  // 轮次完成率：**不要在这里除**，读 totals.completionRate（唯一的算法出口，见 collect.mjs）。
+  // 面板读的是同一个字段 —— 早先两边各除一遍、分母还不同，同一份数据能显示成 100% 和 50%。
+  const rate = T.completionRate === null || T.completionRate === undefined ? '—' : `${T.completionRate}%`
+  L.push(
+    `**成功率**：工具调用 ${pct(T.toolCalls - T.failures, T.toolCalls)} · 轮次完成 ${rate}` +
+      (T.endedTurns > 0 && T.endedTurns < T.turns ? `（分母是已收尾的 ${T.endedTurns} 轮；另有 ${T.turns - T.endedTurns} 轮进行中不计入）` : ''),
+  )
   if (T.suspects > 0) {
     L.push('')
     L.push(
@@ -132,7 +165,7 @@ export function renderReport(record, opts = {}) {
     L.push(`| --- | --- | --- | --- | --- | --- | --- | --- |`)
     for (const t of cap(toolDetail, limit)) {
       L.push(
-        `| \`${t.name}\` | ${t.count} | ${pct(t.count, T.toolCalls)} | ${t.failures} | ` +
+        `| \`${cell(t.name)}\` | ${t.count} | ${pct(t.count, T.toolCalls)} | ${t.failures} | ` +
           `${ms(t.totalMs)} | ${hms(t.firstAt)} | ${hms(t.lastAt)} | ${(t.turns ?? []).join(',') || '-'} |`,
       )
     }
@@ -163,7 +196,7 @@ export function renderReport(record, opts = {}) {
       const mark = c.ok === true ? '✅ 0' : c.ok === false ? '❌ 非 0' : '❔ 未知'
       L.push(
         `| ${i + 1} | ${hms(c.at)} | ${c.turn} | ${mark} | ${c.durationMs ? ms(c.durationMs) : '—'} | ` +
-          `\`${firstLines(c.command, 1, 110)}\` |`,
+          `\`${cell(firstLines(c.command, 1, 110))}\` |`,
       )
     })
     const note = capNote(allCmds.length, Math.min(allCmds.length, limit))
@@ -197,7 +230,7 @@ export function renderReport(record, opts = {}) {
     L.push(`| --- | --- | --- | --- | --- |`)
     for (const f of cap(modifiedFiles, limit)) {
       L.push(
-        `| \`${f.path}\` | ${opLabel(f.ops)} | ${f.count} | ${hms(f.lastAt)} | ${(f.turns ?? []).join(',') || '-'} |`,
+        `| \`${cell(f.path)}\` | ${opLabel(f.ops)} | ${f.count} | ${hms(f.lastAt)} | ${(f.turns ?? []).join(',') || '-'} |`,
       )
     }
     const note = capNote(modifiedFiles.length, Math.min(modifiedFiles.length, limit))
@@ -214,7 +247,7 @@ export function renderReport(record, opts = {}) {
     L.push(`| 文件（完整路径） | 次数 | 末次时间 | 涉及轮次 |`)
     L.push(`| --- | --- | --- | --- |`)
     for (const f of cap(readFiles, limit)) {
-      L.push(`| \`${f.path}\` | ${f.count} | ${hms(f.lastAt)} | ${(f.turns ?? []).join(',') || '-'} |`)
+      L.push(`| \`${cell(f.path)}\` | ${f.count} | ${hms(f.lastAt)} | ${(f.turns ?? []).join(',') || '-'} |`)
     }
     const note = capNote(readFiles.length, Math.min(readFiles.length, limit))
     if (note) {
@@ -251,7 +284,7 @@ export function renderReport(record, opts = {}) {
         : '❔ 未判定'
       L.push(
         `| ${i + 1} | ${hms(x.at)} | ${x.turn} | ${x.kind} | ${mark} | ` +
-          `${x.durationMs ? ms(x.durationMs) : '—'} | \`${flattenCommand(x.command, 110)}\` |`,
+          `${x.durationMs ? ms(x.durationMs) : '—'} | \`${cell(flattenCommand(x.command, 110))}\` |`,
       )
       if (x.note) L.push(`| | | | | | | ${x.note} |`)
     })
@@ -340,11 +373,16 @@ export function renderReport(record, opts = {}) {
   }
 
   // ---------------------------------------------------------- 六、逐轮明细
+  //
+  // 这一节同样必须封顶。DETAIL_LIMIT 的初衷是「别让长会话把上下文吃光」，
+  // 但早先只封了上面几张明细表，轮次明细是 `for (const t of record.turns)` 全量 ——
+  // 实测约 500 字节/轮，200 轮的会话光这一节就 ~100KB，等于这个上限根本没生效。
+  const shownTurns = cap(record.turns, limit)
   L.push(`## 七、逐轮明细`)
   L.push('')
-  for (const t of record.turns) {
+  for (const t of shownTurns) {
     const u = t.usage
-    L.push(`### 轮次 ${t.turn} · ${REASON_LABEL[t.reason?.kind] ?? '❔ 未收尾'}`)
+    L.push(`### 轮次 ${t.turn ?? '?'} · ${REASON_LABEL[t.reason?.kind] ?? '❔ 未收尾'}`)
     L.push('')
     L.push(`**任务**：${firstLines(t.prompt, 3, 400) || '_(无用户输入)_'}`)
     L.push('')
@@ -373,11 +411,18 @@ export function renderReport(record, opts = {}) {
       for (const d of t.deliverables) L.push(`- \`${short(d.path, cwd)}\` — ${d.description ?? ''}`)
       L.push('')
     }
-    if (t.todos?.length) {
-      const done = t.todos.filter((x) => x.status === 'completed').length
+    if (Array.isArray(t.todos) && t.todos.length) {
+      // `t.todos?.length` 挡不住字符串（字符串也有 length），元素也可能是 null ——
+      // 一条写坏的 todo/write 事件就能让整次报告渲染抛异常（实测复现过）。
+      const done = t.todos.filter((x) => x && x.status === 'completed').length
       L.push(`待办清单：${done}/${t.todos.length} 完成`)
       L.push('')
     }
+  }
+  const turnNote = capNote(record.turns.length, shownTurns.length)
+  if (turnNote) {
+    L.push(turnNote)
+    L.push('')
   }
 
   // ---------------------------------------------------------- 七、经验沉淀
@@ -429,7 +474,7 @@ function renderLessons(record, cwd) {
   // 5) 进行中 / 未完成轮次（两者必须分开：进行中不是"没收尾的失败"）
   const running = record.turns.filter((t) => !t.endedAt)
   if (running.length) {
-    out.push(`- 报告生成时**第 ${running.map((t) => t.turn).join('、')} 轮仍在进行中**，所以总耗时、成功率都是当时的快照，会随对话继续变化。`)
+    out.push(`- 报告生成时**第 ${running.map((t) => t.turn ?? '?').join('、')} 轮仍在进行中**，所以总耗时、成功率都是当时的快照，会随对话继续变化。`)
   }
   const unfinished = record.turns.filter((t) => t.endedAt && t.reason?.kind !== 'completed')
   if (unfinished.length) {

@@ -145,9 +145,11 @@ function safeJson(s) {
 export function collectWorkRecord(events) {
   const sessionMeta = events.find((e) => evType(e) === 'session') ?? {}
   const record = {
-    sessionId: sessionMeta.id ?? null,
-    cwd: sessionMeta.cwd ?? null,
-    agentPreset: sessionMeta.agentPreset ?? null,
+    // 这几项会**原样**进报告表头（`| 会话 | … |`、`| 工作目录 | … |`）。
+    // 非字符串时不归一就会印出 `[object Object]` —— 与工具名/路径同一类。
+    sessionId: label(sessionMeta.id, null),
+    cwd: label(sessionMeta.cwd, null),
+    agentPreset: label(sessionMeta.agentPreset, null),
     createdAt: sessionMeta.createdAt ?? null,
     title: null,
     permissions: {},
@@ -160,10 +162,14 @@ export function collectWorkRecord(events) {
   let currentTurn = null
 
   const ensureTurn = (n, at) => {
-    let t = record.turns.find((x) => x.turn === n)
+    // 轮次号必须是整数。`turn` 缺失时会造出 `turn: undefined` 的轮次，而
+    // `record.turns.sort((a,b) => a.turn - b.turn)` 的比较会得到 NaN ——
+    // 排序不可信，报告里还会出现「### 轮次 undefined」。归一到 null 并排到最后。
+    const turn = Number.isInteger(n) ? n : null
+    let t = record.turns.find((x) => x.turn === turn)
     if (!t) {
       t = {
-        turn: n,
+        turn,
         startedAt: at ?? null,
         endedAt: null,
         durationMs: null,
@@ -189,7 +195,10 @@ export function collectWorkRecord(events) {
         retries: 0,
       }
       record.turns.push(t)
-      record.turns.sort((a, b) => a.turn - b.turn)
+      // `turn` 可能是 null（日志里缺 turn 号）：排到最后，且不让比较变成 NaN
+      record.turns.sort(
+        (a, b) => (a.turn ?? Number.MAX_SAFE_INTEGER) - (b.turn ?? Number.MAX_SAFE_INTEGER),
+      )
     }
     return t
   }
@@ -199,17 +208,18 @@ export function collectWorkRecord(events) {
     const d = evData(e)
     switch (t) {
       case 'session/title':
-        record.title = d.title ?? record.title
+        // 标题会进报告首行的引用块，非字符串会印成 `[object Object]`
+        if (d.title != null) record.title = label(d.title)
         break
 
       case 'permission/preset':
-        record.permissions.preset = d.preset
+        record.permissions.preset = label(d.preset, null)
         break
       case 'sandbox/mode':
-        record.permissions.sandbox = d.mode
+        record.permissions.sandbox = label(d.mode, null)
         break
       case 'approval/policy':
-        record.permissions.approval = d.policy
+        record.permissions.approval = label(d.policy, null)
         break
 
       case 'user/message': {
@@ -222,7 +232,7 @@ export function collectWorkRecord(events) {
       }
 
       case 'turn/start': {
-        currentTurn = d.turn
+        currentTurn = Number.isInteger(d.turn) ? d.turn : null
         const tt = ensureTurn(d.turn, e.time)
         tt.startedAt = tt.startedAt ?? e.time
         break
@@ -271,7 +281,8 @@ export function collectWorkRecord(events) {
         const tt = ensureTurn(d.turn)
         const args = safeJson(d.arguments)
         const call = {
-          name: d.name,
+          // 名字非字符串时报告里会出现 `undefined` / `[object Object]`（工具直方图与表格）。
+          name: label(d.name),
           callId: d.callId,
           seq: e.seq,
           at: e.time,
@@ -308,7 +319,8 @@ export function collectWorkRecord(events) {
 
       case 'approval/asked': {
         const tt = ensureTurn(d.turn ?? currentTurn ?? record.turns.length)
-        tt.approvals.push({ toolName: d.toolName, callId: d.callId, reason: d.reason, outcome: null })
+        // toolName 会印在报告的「权限询问：`x`→?...」与逐轮明细里，非字符串会漏出 [object Object]
+        tt.approvals.push({ toolName: label(d.toolName, '(未知工具)'), callId: d.callId, reason: label(d.reason, ''), outcome: null })
         break
       }
       case 'approval/decided': {
@@ -328,7 +340,17 @@ export function collectWorkRecord(events) {
 
       case 'deliverables/presented': {
         const tt = ensureTurn(d.turn ?? currentTurn ?? record.turns.length)
-        for (const f of d.files ?? []) tt.deliverables.push(f)
+        // `d.files ?? []` **挡不住**非数组：数字/对象不可迭代，`for...of` 会直接抛
+        // `number 3 is not iterable`，一次畸形事件就让整次 work_report 失败。
+        // 这与 todo/write 是同一类缺陷（`?.length` / `??` 都只挡 null/undefined）。
+        // 属性测试（随机污染流）800 条里撞出 103 条走到这里，所以不是理论问题。
+        for (const f of Array.isArray(d.files) ? d.files : []) {
+          if (!f || typeof f !== 'object') continue
+          tt.deliverables.push({
+            path: f.path == null ? '' : label(f.path, ''),
+            description: f.description == null ? '' : label(f.description, ''),
+          })
+        }
         break
       }
 
@@ -344,6 +366,27 @@ export function collectWorkRecord(events) {
   }
 
   return finalize(record)
+}
+
+/**
+ * 数值兜底。
+ *
+ * 为什么必须有（实测真机缺陷）：`usage` 字段一旦是**字符串**或对象，
+ * 下面的 `+=` 就变成**字符串拼接**，而且**不报错** —— 报告里直接印出
+ *   | 输入 Token（未缓存） | 00[object Object] |
+ * 用户看到的是一个"数字"，实际是垃圾。这是最难察觉的一类错误：不崩、不警告、数字错。
+ * 只要任意**后续**一条 usage 被污染，整份报告的该字段就一起变成字符串。
+ */
+const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
+
+/**
+ * 名字/路径兜底：非字符串时报告里会出现 `undefined` / `[object Object]`。
+ * 返回一个可读的占位而不是让它原样漏进表格。
+ */
+const label = (v, fallback = '(未知)') => {
+  if (typeof v === 'string' && v.length > 0) return v
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v)
+  return v == null ? fallback : `(${typeof v})`
 }
 
 function mergeUsage(acc, u) {
@@ -362,18 +405,31 @@ function mergeUsage(acc, u) {
   // 这四个都是**逐条增量**，必须相加。
   // 实测判定（test/usage-semantics-check.mjs）：cacheReadTokens 逐条累加在
   // 42/42 个会话上与 DSH 权威总量完全一致，取 max 则 0/42 命中。
-  out.inputTokens += u.inputTokens ?? 0
-  out.outputTokens += u.outputTokens ?? 0
-  out.cacheReadTokens += u.cacheReadTokens ?? 0
-  out.cacheWriteTokens += u.cacheWriteTokens ?? 0
-  out.reasoningTokens += u.reasoningTokens ?? 0
+  out.inputTokens += num(u.inputTokens)
+  out.outputTokens += num(u.outputTokens)
+  out.cacheReadTokens += num(u.cacheReadTokens)
+  out.cacheWriteTokens += num(u.cacheWriteTokens)
+  out.reasoningTokens += num(u.reasoningTokens)
   out.reports += 1
-  out.maxTotalTokens = Math.max(out.maxTotalTokens, u.totalTokens ?? 0)
+  out.maxTotalTokens = Math.max(out.maxTotalTokens, num(u.totalTokens))
   return out
 }
 
+/**
+ * 只有字符串/有限数字才当成命令行处理。
+ *
+ * 为什么不能直接 `String(args.command)`：那个真值判断会放行任意对象，
+ * 而 `String()` 对 null-prototype 对象会**抛错**（`Cannot convert object to primitive value`），
+ * 一次畸形事件就能让整次 `work_report` 调用失败；数组/对象则会被 `String()` 成
+ * `"npm,test"` / `"[object Object]"` 混进报告。日志里的 `arguments` 经过 JSON.parse，
+ * 正常不可能是这些形态，所以这里是**防御性**的 —— 但成本是一行，收益是工具不会整体挂掉。
+ */
+const isCommandLike = (v) => typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v))
+
 function classifyCall(turn, call, args) {
-  const p = args.file_path ?? args.path
+  // 路径非字符串时（日志被写坏、字段改名）会给报告塞进 `[object Object]`，归一到可读占位
+  const rawPath = args.file_path ?? args.path
+  const p = rawPath == null ? null : label(rawPath)
   // 所有条目都带 `at`（事件时间戳），面板要按时间展示
   if (FILE_READ_TOOLS.has(call.name) && p) {
     if (!turn.filesRead.includes(p)) turn.filesRead.push(p)
@@ -384,7 +440,7 @@ function classifyCall(turn, call, args) {
   } else if (FILE_EDIT_TOOLS.has(call.name) && p) {
     if (!turn.filesEdited.includes(p)) turn.filesEdited.push(p)
     turn.fileEvents.push({ path: p, op: 'edit', tool: call.name, at: call.at, callId: call.callId })
-  } else if (SHELL_TOOLS.has(call.name) && args.command) {
+  } else if (SHELL_TOOLS.has(call.name) && isCommandLike(args.command)) {
     const cmd = String(args.command)
     turn.commands.push({
       command: cmd,
@@ -544,7 +600,7 @@ function attachOutcome(turn, call, outcome, resultText) {
       at: call.at,
       durationMs: call.durationMs ?? null,
       command: call.args?.command ? firstLines(call.args.command, 1, 120) : undefined,
-      file: call.args?.file_path ?? call.args?.path,
+      file: call.args?.file_path != null ? label(call.args.file_path, '') : (call.args?.path != null ? label(call.args.path, '') : undefined),
     }
     if (outcome.suspect) turn.suspects.push(entry)
     else turn.failures.push(entry)
@@ -686,6 +742,22 @@ function finalize(record) {
     allFilesRead: [...allRead],
     allFilesWritten: [...allWritten],
     allFilesEdited: [...allEdited],
+
+    // ---- 轮次完成率：**唯一的算法出口**
+    //
+    // 这里算一次、存进 totals，面板与 markdown/HTML 都只读这个数，不允许各自再除一遍。
+    // 为什么（实测真机 bug）：两边分母曾经不同 —— 面板用「已收尾轮次」、报告用「全部轮次」，
+    // 同一份数据在面板显示 100%、在下载的报告里显示 50%（54 个会话里 4 个对不上）。
+    // 同一个数字有两个渲染面就有两个解释，这是**结构问题**，靠"记得同步改两处"是治不住的。
+    //
+    // 分母取「已收尾的轮次」：进行中的那一轮还没有结论，把它算成没完成会凭空拉低完成率。
+    endedTurns: totals.completed + totals.aborted + totals.interrupted,
+    /** 0-100 的整数；一轮都没收尾时为 null（渲染成「—」，而不是谎报 0%）。 */
+    completionRate:
+      totals.completed + totals.aborted + totals.interrupted > 0
+        ? Math.round((totals.completed / (totals.completed + totals.aborted + totals.interrupted)) * 100)
+        : null,
+
     // 完成度：所有轮次都以 completed 收尾才算完成
     finished: totals.turns > 0 && totals.completed === totals.turns,
   }
