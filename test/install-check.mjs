@@ -99,24 +99,24 @@ const applied = runInstaller([...argsA, '--apply'])
 check('安装退出码 0', applied.code === 0, `code=${applied.code}\n${String(applied.stdout).slice(-900)}`)
 
 const after = JSON.parse(readFileSync(A.PROFILE_PKG, 'utf8'))
-check('dependencies 里有插件', typeof after.dependencies?.['dsh-agent-worklog'] === 'string',
+check('dependencies 里有插件', typeof after.dependencies?.['dsh-agent-log'] === 'string',
   JSON.stringify(after.dependencies))
-check('依赖用的是 file: 协议', String(after.dependencies?.['dsh-agent-worklog']).startsWith('file:'),
-  String(after.dependencies?.['dsh-agent-worklog']))
-check('路径用正斜杠', !String(after.dependencies?.['dsh-agent-worklog']).includes('\\\\'),
-  String(after.dependencies?.['dsh-agent-worklog']))
-check('bundles 里追加了插件', (after.dsh?.profile?.bundles ?? []).includes('dsh-agent-worklog'),
+check('依赖用的是 file: 协议', String(after.dependencies?.['dsh-agent-log']).startsWith('file:'),
+  String(after.dependencies?.['dsh-agent-log']))
+check('路径用正斜杠', !String(after.dependencies?.['dsh-agent-log']).includes('\\\\'),
+  String(after.dependencies?.['dsh-agent-log']))
+check('bundles 里追加了插件', (after.dsh?.profile?.bundles ?? []).includes('dsh-agent-log'),
   JSON.stringify(after.dsh?.profile?.bundles))
 check('原有 bundle 保留', (after.dsh?.profile?.bundles ?? []).includes('@deepseek-ai/dsh-base'))
 check('原有字段保留（name/private）', after.name === BEFORE.name && after.private === true)
 
 // 真正装上了吗 —— loader 按包名解析，这一步才是"装上"的定义
-const installedPkg = join(A.PROFILE_DIR, 'node_modules', 'dsh-agent-worklog', 'package.json')
+const installedPkg = join(A.PROFILE_DIR, 'node_modules', 'dsh-agent-log', 'package.json')
 check('profile 里能按包名解析到插件', existsSync(installedPkg), installedPkg)
 check('安装器自己报告了「已就位」', /已就位/.test(applied.stdout))
 if (existsSync(installedPkg)) {
   const ip = JSON.parse(readFileSync(installedPkg, 'utf8'))
-  check('装进去的是插件的 package.json', ip.name === 'dsh-agent-worklog', String(ip.name))
+  check('装进去的是插件的 package.json', ip.name === 'dsh-agent-log', String(ip.name))
 }
 
 // 备份
@@ -140,7 +140,7 @@ check('源目录已删除', !existsSync(dl))
 check('profile 里的插件仍在', existsSync(installedPkg))
 check('仍能跑离线 CLI（真正加载了包）', (() => {
   try {
-    const out = execFileSync(process.execPath, [join(A.PROFILE_DIR, 'node_modules', 'dsh-agent-worklog', 'bin', 'worklog.mjs'), '--help'], {
+    const out = execFileSync(process.execPath, [join(A.PROFILE_DIR, 'node_modules', 'dsh-agent-log', 'bin', 'worklog.mjs'), '--help'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, DSH_HOME: A.HOME },
@@ -172,10 +172,10 @@ const backupCountBefore = existsSync(SANDBOX_BACKUPS) ? readdirSync(SANDBOX_BACK
 const again = runInstaller([...argsA2, '--apply'])
 check('再次安装退出码 0', again.code === 0, `code=${again.code}\n${String(again.stdout).slice(-900)}`)
 const after2 = JSON.parse(readFileSync(A.PROFILE_PKG, 'utf8'))
-const depNow = String(after2.dependencies?.['dsh-agent-worklog'] ?? '')
+const depNow = String(after2.dependencies?.['dsh-agent-log'] ?? '')
 check('依赖协议仍是 file:', depNow.startsWith('file:'), depNow)
 check('bundles 里没有重复项',
-  (after2.dsh?.profile?.bundles ?? []).filter((b) => b === 'dsh-agent-worklog').length === 1,
+  (after2.dsh?.profile?.bundles ?? []).filter((b) => b === 'dsh-agent-log').length === 1,
   JSON.stringify(after2.dsh?.profile?.bundles))
 check('真的幂等：配置无变化、不新增备份',
   readdirSync(SANDBOX_BACKUPS).length === backupCountBefore && /无需改动|已经装过/.test(again.stdout),
@@ -188,8 +188,8 @@ check('回滚退出码 0', rb.code === 0, `code=${rb.code}`)
 const restored = readFileSync(A.PROFILE_PKG, 'utf8')
 check('package.json 与安装前逐字节一致', restored === beforeText)
 const restoredObj = JSON.parse(restored)
-check('依赖已移除', !restoredObj.dependencies?.['dsh-agent-worklog'])
-check('bundles 已还原', !(restoredObj.dsh?.profile?.bundles ?? []).includes('dsh-agent-worklog'))
+check('依赖已移除', !restoredObj.dependencies?.['dsh-agent-log'])
+check('bundles 已还原', !(restoredObj.dsh?.profile?.bundles ?? []).includes('dsh-agent-log'))
 check('回滚后清理了沙箱备份', !existsSync(SANDBOX_BACKUPS))
 
 // ================================================================ 形态 B：开发检出（link:）
@@ -202,15 +202,15 @@ check('自动判定为开发检出 → 用 link: 协议', /依赖协议 : .*link
 const appliedB = runInstaller([...argsB, '--apply'])
 check('link: 安装退出码 0', appliedB.code === 0, `code=${appliedB.code}\n${String(appliedB.stdout).slice(-800)}`)
 const afterB = JSON.parse(readFileSync(B.PROFILE_PKG, 'utf8'))
-check('依赖用的是 link: 协议', String(afterB.dependencies?.['dsh-agent-worklog']).startsWith('link:'),
-  String(afterB.dependencies?.['dsh-agent-worklog']))
+check('依赖用的是 link: 协议', String(afterB.dependencies?.['dsh-agent-log']).startsWith('link:'),
+  String(afterB.dependencies?.['dsh-agent-log']))
 check('link: 也报告了「已就位」', /已就位/.test(appliedB.stdout))
 
 // 显式 --file 覆盖自动判定
 const appliedB2 = runInstaller([...argsB, '--apply', '--file'])
 check('--file 能覆盖自动判定', appliedB2.code === 0, `code=${appliedB2.code}`)
-check('覆盖后依赖变成 file:', String(JSON.parse(readFileSync(B.PROFILE_PKG, 'utf8')).dependencies?.['dsh-agent-worklog']).startsWith('file:'),
-  String(JSON.parse(readFileSync(B.PROFILE_PKG, 'utf8')).dependencies?.['dsh-agent-worklog']))
+check('覆盖后依赖变成 file:', String(JSON.parse(readFileSync(B.PROFILE_PKG, 'utf8')).dependencies?.['dsh-agent-log']).startsWith('file:'),
+  String(JSON.parse(readFileSync(B.PROFILE_PKG, 'utf8')).dependencies?.['dsh-agent-log']))
 
 // ---------------------------------------------------------------- 6. 异常路径
 console.log('\n=== 6. 异常路径 ===')

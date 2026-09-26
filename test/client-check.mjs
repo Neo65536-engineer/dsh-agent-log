@@ -55,7 +55,7 @@ console.log('=== 1. ModuleLoader 自注册契约 ===')
 // 用动态 import 真的执行一遍 client.js
 await import(`file:///${clientPath.replace(/\\/g, '/')}`)
 check('调用了 window.__ModuleLoader__.load', loaded !== null)
-check('id 等于包名', loaded?.id === 'dsh-agent-worklog', String(loaded?.id))
+check('id 等于包名', loaded?.id === 'dsh-agent-log', String(loaded?.id))
 check('提供了 factory', typeof loaded?.factory === 'function')
 
 const mod = loaded.factory((name) => {
@@ -108,7 +108,7 @@ check('apply 未抛错', applyErr === null, String(applyErr?.message))
 
 const tabType = registered.tabTypes[0]
 check('注册了 1 个 tab 类型', registered.tabTypes.length === 1, String(registered.tabTypes.length))
-check('tab 类型有 id', tabType?.id === 'dsh-agent-worklog', String(tabType?.id))
+check('tab 类型有 id', tabType?.id === 'dsh-agent-log', String(tabType?.id))
 check('tab 类型有 kind', typeof tabType?.kind === 'string' && tabType.kind.length > 0, String(tabType?.kind))
 check('title 是 thunk（函数）', typeof tabType?.title === 'function')
 check('title() 返回非空字符串', typeof tabType?.title?.() === 'string' && tabType.title().length > 0)

@@ -1,9 +1,9 @@
 /**
- * dsh-agent-worklog —— 宿主侧插件。
+ * dsh-agent-log —— 宿主侧插件。
  *
  * 只做三件事：
  *   1. 注册一个 agent 工具 `work_report`，让模型能按需生成《本次 Agent 工作报告》；
- *   2. 提供一个只读 HTTP 路由 /plugins/dsh-agent-worklog/report，供 Web 面板取数据；
+ *   2. 提供一个只读 HTTP 路由 /plugins/dsh-agent-log/report，供 Web 面板取数据；
  *   3. 不改任何会话数据 —— 只读会话日志。
  *
  * 刻意**不 import 任何 @deepseek-ai/* 包**：工具定义用原生 JSON Schema 手写，
@@ -18,7 +18,7 @@ import { collectWorkRecord, rescoreRecord } from './core/collect.mjs'
 import { renderReport } from './core/render.mjs'
 import { reportDocument } from './core/html.mjs'
 
-export const name = 'dsh-agent-worklog'
+export const name = 'dsh-agent-log'
 export const inject = ['tools']
 
 // ------------------------------------------------------- 陈旧模块自检（踩过的坑）
@@ -279,16 +279,30 @@ const TOOL = {
     const wantJson = a.format === 'json'
     const wantHtml = a.format === 'html'
 
+    // 陈旧模块的警告文案（markdown / html / json 三条路径都要能看见）。
+    // 早先只有 markdown 有，于是"改了代码但宿主还是旧的"这件事在 HTML/JSON 上完全静默。
+    const staleText = fresh.stale
+      ? `宿主加载的是旧版插件模块（${new Date(fresh.loadedAt).toLocaleString()}），` +
+        `磁盘上有更新的文件：${fresh.newer.map((n) => n.file).join('、')}。请重启 DSH，否则数字/文案可能与源码不符。`
+      : null
+
     const text = wantJson
-      ? JSON.stringify({ ...built.record, diagnostics }, null, 2)
+      ? JSON.stringify(
+          { ...built.record, diagnostics, ...(staleText ? { warning: staleText } : {}) },
+          null,
+          2,
+        )
       : wantHtml
-        ? reportDocument(built.markdown, { sessionId: built.sessionId, generatedAt: Date.now() })
+        ? reportDocument(built.markdown, {
+            sessionId: built.sessionId,
+            generatedAt: Date.now(),
+            stale: fresh.stale,
+            loadedAt: fresh.loadedAt,
+            newer: fresh.newer.map((n) => n.file),
+          })
         : built.markdown +
         (resolutionNote(built.resolvedBy, built.sessionId) ?? '') +
-        (fresh.stale
-          ? `> ⚠️ 宿主加载的是旧版插件模块（${new Date(fresh.loadedAt).toLocaleString()}），` +
-            `磁盘上有更新的文件：${fresh.newer.map((n) => n.file).join('、')}。**请重启 DSH**，否则数字可能与源码不符。\n`
-          : '') +
+        (staleText ? `> ⚠️ ${staleText}\n` : '') +
         `\n> 解析自 ${built.diagnostics.frames} 个 zstd 帧 / ${built.diagnostics.events} 条事件` +
         (built.diagnostics.damagedFrames ? `（${built.diagnostics.damagedFrames} 帧损坏已跳过）` : '') +
         '\n'
@@ -332,8 +346,8 @@ let ctxLog = null
 
 export function apply(ctx, config = {}) {
   const logger = ctx.logger ?? console
-  const log = (...a) => logger?.info?.('[dsh-agent-worklog]', ...a)
-  ctxLog = (...a) => logger?.warn?.('[dsh-agent-worklog]', ...a)
+  const log = (...a) => logger?.info?.('[dsh-agent-log]', ...a)
+  ctxLog = (...a) => logger?.warn?.('[dsh-agent-log]', ...a)
 
   // 0) 启动即自检：宿主内存里的模块是否已经落后于磁盘（HMR 不会重载宿主模块）
   warnIfStale(ctxLog)
@@ -354,7 +368,7 @@ export function apply(ctx, config = {}) {
   ctx.inject(['webServer'], (webCtx) => {
     const webServer = webCtx.get('webServer')
     if (!webServer?.register) return
-    const route = config.route ?? '/plugins/dsh-agent-worklog/report'
+    const route = config.route ?? '/plugins/dsh-agent-log/report'
     webCtx.effect(
       () =>
         webServer.register({
@@ -409,7 +423,15 @@ export function apply(ctx, config = {}) {
               if (format === 'html') {
                 // 面板的「下载」按钮走这条路：自包含、可打印的文档
                 res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-                res.end(reportDocument(built.markdown, { sessionId: built.sessionId, generatedAt: Date.now() }))
+                res.end(
+                  reportDocument(built.markdown, {
+                    sessionId: built.sessionId,
+                    generatedAt: Date.now(),
+                    stale: fresh.stale,
+                    loadedAt: fresh.loadedAt,
+                    newer: fresh.newer.map((n) => n.file),
+                  }),
+                )
                 return
               }
               res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
@@ -420,7 +442,7 @@ export function apply(ctx, config = {}) {
             }
           },
         }),
-      'dsh-agent-worklog: report route',
+      'dsh-agent-log: report route',
     )
     log('http route registered:', route)
   })

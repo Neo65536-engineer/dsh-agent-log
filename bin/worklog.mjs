@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * dsh-agent-worklog 离线 CLI —— 验证核心逻辑，不需要安装插件。
+ * dsh-agent-log 离线 CLI —— 验证核心逻辑，不需要安装插件。
  *
  *   node bin/worklog.mjs --list                    列出所有会话
  *   node bin/worklog.mjs --latest                  最近一个会话的报告
@@ -57,7 +57,7 @@ if (!home) {
 const sessions = listSessions(home)
 
 if (flag('--help') || flag('-h') || argv.length === 0) {
-  console.log(`dsh-agent-worklog —— 从 DSH 会话日志生成 Agent 工作报告
+  console.log(`dsh-agent-log —— 从 DSH 会话日志生成 Agent 工作报告
 
   DSH home : ${home}
   会话数   : ${sessions.length}

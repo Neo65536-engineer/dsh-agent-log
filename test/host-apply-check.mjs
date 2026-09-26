@@ -82,7 +82,7 @@ const route = a.state.routes[0]
 check('路由用 kind 而不是 method', route?.kind !== undefined && route?.method === undefined,
   `keys=${Object.keys(route ?? {}).join(',')}`)
 check("路由 kind 是 'prefix'", route?.kind === 'prefix', String(route?.kind))
-check('路由 path 正确', route?.path === '/plugins/dsh-agent-worklog/report', String(route?.path))
+check('路由 path 正确', route?.path === '/plugins/dsh-agent-log/report', String(route?.path))
 check('路由有 handler', typeof route?.handler === 'function')
 check('用了 ctx.effect 管理生命周期', a.state.effects.length >= 2, a.state.effects.join(' | '))
 
@@ -121,7 +121,7 @@ function makeRes() {
 }
 
 const res1 = makeRes()
-await handler({ url: '/plugins/dsh-agent-worklog/report?format=json' }, res1)
+await handler({ url: '/plugins/dsh-agent-log/report?format=json' }, res1)
 check('返回 200', res1.out.status === 200, String(res1.out.status))
 check('content-type 是 json', /application\/json/.test(res1.out.headers?.['content-type'] ?? ''))
 let parsed = null
@@ -135,13 +135,13 @@ check('totals 有工具直方图', Array.isArray(parsed?.totals?.toolHistogram))
 check('含 diagnostics', !!parsed?.diagnostics)
 
 const res2 = makeRes()
-await handler({ url: '/plugins/dsh-agent-worklog/report?format=markdown' }, res2)
+await handler({ url: '/plugins/dsh-agent-log/report?format=markdown' }, res2)
 check('markdown 格式返回 200', res2.out.status === 200, String(res2.out.status))
 check('markdown content-type 正确', /text\/markdown/.test(res2.out.headers?.['content-type'] ?? ''))
 check('markdown 正文含报告标题', String(res2.out.body).includes('# 本次 Agent 工作报告'))
 
 const res3 = makeRes()
-await handler({ url: '/plugins/dsh-agent-worklog/report?format=json&sessionId=nope-xyz' }, res3)
+await handler({ url: '/plugins/dsh-agent-log/report?format=json&sessionId=nope-xyz' }, res3)
 check('未知会话返回 500 而不是崩溃', res3.out.status === 500, String(res3.out.status))
 check('错误信息可读', /找不到会话/.test(String(res3.out.body)))
 

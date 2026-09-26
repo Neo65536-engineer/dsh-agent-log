@@ -333,7 +333,7 @@ export function renderReport(record, opts = {}) {
 
   L.push(`---`)
   L.push('')
-  L.push(`_本报告由 dsh-agent-worklog 从 DSH 会话日志（只读）自动生成，未修改任何会话数据。_`)
+  L.push(`_本报告由 dsh-agent-log 从 DSH 会话日志（只读）自动生成，未修改任何会话数据。_`)
   L.push('')
 
   return L.join('\n')

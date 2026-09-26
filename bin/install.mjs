@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * dsh-agent-worklog 安装器 / 回滚器。
+ * dsh-agent-log 安装器 / 回滚器。
  *
  * 设计原则：**默认只做只读预检，绝不动配置。** 必须显式加 --apply 才写入。
  *
@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const PKG_NAME = 'dsh-agent-worklog'
+const PKG_NAME = 'dsh-agent-log'
 
 const argv = process.argv.slice(2)
 const has = (f) => argv.includes(f)
@@ -101,7 +101,7 @@ const PROFILE = val('--profile', process.env.DSH_PROFILE || 'desktop')
 const PROFILE_DIR = join(DSH_HOME, 'profiles', PROFILE)
 const PROFILE_PKG = join(PROFILE_DIR, 'package.json')
 
-console.log(c.b('dsh-agent-worklog 安装器'))
+console.log(c.b('dsh-agent-log 安装器'))
 console.log(`  插件目录 : ${PLUGIN_DIR}`)
 console.log(`  DSH home : ${DSH_HOME}`)
 console.log(`  profile  : ${PROFILE}  (${PROFILE_DIR})`)
@@ -392,7 +392,7 @@ if (existsSync(PNPM_WS)) {
     writeFileSync(
       PNPM_WS,
       txt.replace(/\s*$/, '') +
-        '\n\n# 由 dsh-agent-worklog 安装器写入：pnpm 11 起 strictDepBuilds 默认 true，\n' +
+        '\n\n# 由 dsh-agent-log 安装器写入：pnpm 11 起 strictDepBuilds 默认 true，\n' +
         '# 只要有依赖带构建脚本就非 0 退出（ERR_PNPM_IGNORED_BUILDS），与安装成败无关。\n' +
         '# 本插件零运行时依赖、无 postinstall，无需批准构建。\n' +
         'strictDepBuilds: false\n',

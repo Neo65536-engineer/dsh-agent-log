@@ -52,7 +52,7 @@ async function getPayload(url) {
   return { status: res.status, json: JSON.parse(res.body) }
 }
 
-const { status, json } = await getPayload('/plugins/dsh-agent-worklog/report?format=json')
+const { status, json } = await getPayload('/plugins/dsh-agent-log/report?format=json')
 check('路由返回 200', status === 200, String(status))
 console.log(`     顶层键: ${Object.keys(json).join(', ')}`)
 
@@ -121,10 +121,10 @@ check('失败条目字段齐（tool/kind/seq）',
 
 // 用一个**确实有失败**的会话来验证「有失败必须列得出来」这条路（不依赖"最新会话"）
 if (hardFails.length === 0) {
-  const list = await getPayload('/plugins/dsh-agent-worklog/report?list=1').catch(() => null)
+  const list = await getPayload('/plugins/dsh-agent-log/report?list=1').catch(() => null)
   let found = null
   for (const s of list?.json?.sessions ?? []) {
-    const p = await getPayload(`/plugins/dsh-agent-worklog/report?format=json&sessionId=${s.sessionId}`)
+    const p = await getPayload(`/plugins/dsh-agent-log/report?format=json&sessionId=${s.sessionId}`)
     const fs = (p.json?.record?.turns ?? []).flatMap((t) => t.failures ?? [])
     if (fs.length > 0) { found = { id: s.sessionId, n: fs.length, sample: fs[0] }; break }
   }

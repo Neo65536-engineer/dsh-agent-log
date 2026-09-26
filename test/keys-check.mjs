@@ -46,12 +46,12 @@ apply(hostCtx)
 
 async function payloadFor(sessionId) {
   const res = { status: null, body: null, writeHead(s) { this.status = s }, end(b) { this.body = b } }
-  await routes[0].handler({ url: `/plugins/dsh-agent-worklog/report?format=json&sessionId=${sessionId}` }, res)
+  await routes[0].handler({ url: `/plugins/dsh-agent-log/report?format=json&sessionId=${sessionId}` }, res)
   return JSON.parse(res.body)
 }
 
 const listRes = { status: null, body: null, writeHead(s) { this.status = s }, end(b) { this.body = b } }
-await routes[0].handler({ url: '/plugins/dsh-agent-worklog/report?list=1' }, listRes)
+await routes[0].handler({ url: '/plugins/dsh-agent-log/report?list=1' }, listRes)
 const sessions = JSON.parse(listRes.body).sessions ?? []
 // 优先挑「有失败且有疑似」的会话：最容易触发 key 撞车的那条路径
 let data = null

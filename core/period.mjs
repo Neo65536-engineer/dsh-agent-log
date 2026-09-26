@@ -332,7 +332,7 @@ export function renderPeriod(agg, opts = {}) {
 
   L.push(`---`)
   L.push('')
-  L.push(`_本报告由 dsh-agent-worklog 从 DSH 会话日志（只读）聚合生成。_`)
+  L.push(`_本报告由 dsh-agent-log 从 DSH 会话日志（只读）聚合生成。_`)
   L.push('')
   return L.join('\n')
 }

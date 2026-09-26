@@ -1,5 +1,5 @@
 {
-  "name": "dsh-agent-worklog",
+  "name": "dsh-agent-log",
   "version": "0.2.0",
   "description": "Agent 工作记录 / 任务复盘 / 自动生成项目报告：从 DSH 会话日志只读还原这次任务做了什么，并产出可读的《本次 Agent 工作报告》",
   "license": "MIT",
@@ -21,11 +21,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Neo65536-engineer/dsh-agent-worklog.git"
+    "url": "git+https://github.com/Neo65536-engineer/dsh-agent-log.git"
   },
-  "homepage": "https://github.com/Neo65536-engineer/dsh-agent-worklog#readme",
+  "homepage": "https://github.com/Neo65536-engineer/dsh-agent-log#readme",
   "bugs": {
-    "url": "https://github.com/Neo65536-engineer/dsh-agent-worklog/issues"
+    "url": "https://github.com/Neo65536-engineer/dsh-agent-log/issues"
   },
   "publishConfig": {
     "access": "public"

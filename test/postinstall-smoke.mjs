@@ -28,7 +28,7 @@ const check = (name, cond, extra = '') => {
 }
 
 const PROFILE_DIR = process.env.DSH_PROFILE_DIR || 'E:\\tools\\dsh\\profiles\\desktop'
-const PKG = 'dsh-agent-worklog'
+const PKG = 'dsh-agent-log'
 console.log(`profile: ${PROFILE_DIR}\n`)
 
 // ---------------------------------------------------------------- 1. 解析
@@ -102,7 +102,7 @@ if (existsSync(patchPath)) {
   // 结构极简，做个形状校验
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
   check('形状正确（insert → id/name）',
-    lines[0] === '- insert:' && lines[1] === '- id: dsh-agent-worklog' && lines[2] === `name: ${PKG}`,
+    lines[0] === '- insert:' && lines[1] === '- id: dsh-agent-log' && lines[2] === `name: ${PKG}`,
     JSON.stringify(lines))
 }
 

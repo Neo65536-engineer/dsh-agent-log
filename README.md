@@ -1,4 +1,4 @@
-# dsh-agent-worklog
+# dsh-agent-log
 
 Agent 工作记录 / 任务复盘 / 自动生成项目报告 —— DSH 插件。
 
@@ -7,7 +7,7 @@ Agent 工作记录 / 任务复盘 / 自动生成项目报告 —— DSH 插件�
 ## 安装（从 GitHub，交给 DSH 自己装）
 
 ```bash
-dsh plugin --profile web install Neo65536-engineer/dsh-agent-worklog
+dsh plugin --profile web install Neo65536-engineer/dsh-agent-log
 ```
 
 装完重启 DSH（重跑 `dsh web` / 重开桌面版）即可。
@@ -189,10 +189,10 @@ node bin/worklog.mjs --period --since 2026-09-20 --until 2026-09-25
 ### 3. HTTP 路由（装进 DSH 后）
 
 ```
-GET /plugins/dsh-agent-worklog/report?format=json&sessionId=...&turns=N
-GET /plugins/dsh-agent-worklog/report?format=markdown
-GET /plugins/dsh-agent-worklog/report?format=html          # 自包含可下载文档
-GET /plugins/dsh-agent-worklog/report?list=1               # 最近会话列表（面板选择器用）
+GET /plugins/dsh-agent-log/report?format=json&sessionId=...&turns=N
+GET /plugins/dsh-agent-log/report?format=markdown
+GET /plugins/dsh-agent-log/report?format=html          # 自包含可下载文档
+GET /plugins/dsh-agent-log/report?list=1               # 最近会话列表（面板选择器用）
 ```
 
 ### 4. 右侧 Sidebar 面板（装进 DSH 后）
@@ -208,7 +208,7 @@ GET /plugins/dsh-agent-worklog/report?list=1               # 最近会话列表�
 文档由**宿主侧**渲染（前端只负责取回来存盘），所以面板、离线 CLI、agent 工具三条路径
 拿到的报告永远是同一份，不会两边规则漂移。
 
-> 对应接口：`GET /plugins/dsh-agent-worklog/report?format=html`；
+> 对应接口：`GET /plugins/dsh-agent-log/report?format=html`；
 > agent 工具也支持 `work_report({ format: "html", out: "报告.html" })`。
 
 面板绑定**自己所属的会话**：框架把会话标准工具包（`sessionId`）作为 props 传给面板正文
@@ -331,7 +331,7 @@ npm run rollback    # 需要时回滚到安装前
 node bin/install.mjs --apply                 # 自动判定
 node bin/install.mjs --apply --file          # 强制 file:（分发包）
 node bin/install.mjs --apply --link          # 强制 link:（开发检出）
-node bin/install.mjs --apply --source-dir D:\pkg\dsh-agent-worklog   # 指定插件源目录
+node bin/install.mjs --apply --source-dir D:\pkg\dsh-agent-log   # 指定插件源目录
 ```
 
 > 为什么必须支持 `file:`：早先这里**硬编码 `link:`**，于是"下载一个包再装"这条路
@@ -423,13 +423,13 @@ $ npm run loaded
 
 - `cordis.patch.yml` 合法且被应用
 - bundle 被识别
-- 插件确实进了组合树（输出里出现 `# == dsh-agent-worklog` 与对应的 id/name 行）
+- 插件确实进了组合树（输出里出现 `# == dsh-agent-log` 与对应的 id/name 行）
 
 脚本最后会删掉临时 profile，并检查源 profile 的 `node_modules` 未被 junction 清理误伤
 （**必须先删 junction 再删目录，顺序反了会连带删掉目标内容**）。
 
 > 已验证：`desktop` 的组合输出第 1266 行出现了
-> `# == dsh-agent-worklog` / `- id: dsh-agent-worklog` / `name: dsh-agent-worklog`，
+> `# == dsh-agent-log` / `- id: dsh-agent-log` / `name: dsh-agent-log`，
 > 形态与已知能工作的 `dsh-inline-images` 完全一致。
 
 预检会检查：插件本体完整性、profile 可解析、**pnpm 版本与 profile 的
@@ -563,8 +563,8 @@ if (!Object.hasOwn(fields, 'peerDependencies')) return void 0;   // 没有该字
 
 ```jsonc
 // E:\tools\dsh\profiles\desktop\package.json
-"dependencies": { "dsh-agent-worklog": "link:E:/tools/work/plugins/dsh-agent-worklog" },
-"dsh": { "profile": { "bundles": [ /* ... */, "dsh-agent-worklog" ] } }
+"dependencies": { "dsh-agent-log": "link:E:/tools/work/plugins/dsh-agent-log" },
+"dsh": { "profile": { "bundles": [ /* ... */, "dsh-agent-log" ] } }
 ```
 
 然后在该 profile 目录 `pnpm install`，重启 DSH。
@@ -610,7 +610,7 @@ node /tmp/pf/bin/preflight.js --dir . --strict     # 期望：No findings
 
 ```bash
 npm run pack:check     # 先看 tarball 里到底装了什么（不落盘）
-pnpm pack              # 产出 dsh-agent-worklog-<version>.tgz
+pnpm pack              # 产出 dsh-agent-log-<version>.tgz
 ```
 
 `files` 白名单决定内容：`index.js`、`client.js`、`core/`、`bin/`、`cordis.patch.yml`、
@@ -620,7 +620,7 @@ pnpm pack              # 产出 dsh-agent-worklog-<version>.tgz
 ### 从 tarball 安装（发布后的真实路径）
 
 ```bash
-tar -xzf dsh-agent-worklog-0.2.0.tgz          # 解压出 package/ 目录
+tar -xzf dsh-agent-log-0.2.0.tgz          # 解压出 package/ 目录
 node package/bin/install.mjs --apply \
   --source-dir <解压出的绝对路径> --profile desktop
 ```

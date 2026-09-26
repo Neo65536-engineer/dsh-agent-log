@@ -191,6 +191,16 @@ footer{max-width:920px;margin:14px auto 0;color:#57606a;font-size:12px;text-alig
   h2{page-break-after:avoid;}
   table,pre,blockquote{page-break-inside:avoid;}
 }
+.wl-stale{background:#fff8e1;border:1px solid #f0c36d;border-radius:6px;
+  padding:10px 12px;margin:0 0 18px;color:#6b4b00;font-size:.95em;}
+.wl-stale strong{color:#8a5a00;}
+@media (prefers-color-scheme:dark){
+  .wl-stale{background:#3a2f12;border-color:#6b5518;color:#f0d9a0;}
+  .wl-stale strong{color:#ffd479;}
+}
+@media print{
+  .wl-stale{background:#fff;border:1px dashed #8a5a00;color:#000;}
+}
 `
 
 /** 自包含 HTML 文档（内联样式，无外部依赖，可直接打开或打印成 PDF）。 */
@@ -198,6 +208,21 @@ export function reportDocument(markdown, meta = {}) {
   const title = '本次 Agent 工作报告'
   const sid = meta.sessionId ?? ''
   const gen = meta.generatedAt ? new Date(meta.generatedAt).toLocaleString() : new Date().toLocaleString()
+
+  /**
+   * 陈旧模块横幅。
+   *
+   * 为什么必须有：宿主内存里的插件模块**不会**因为磁盘文件被编辑而重新 import。
+   * 早先这条警告只加在 markdown 文本里，而 HTML 与 JSON 两条路径完全没有提示 ——
+   * 实测踩过：改了包名后生成 HTML 报告，页脚仍是旧名，而文档里没有任何说明，
+   * 看报告的人无从判断"这份报告是新代码还是旧代码产出的"。
+   */
+  const staleHtml = meta.stale
+    ? `<aside class="wl-stale"><strong>⚠️ 宿主加载的是旧版插件模块</strong>（加载于 ${esc(meta.loadedAt ? new Date(meta.loadedAt).toLocaleString() : '未知时间')}），` +
+      `磁盘上有更新的文件：${esc((meta.newer ?? []).join('、') || '（未列出）')}。` +
+      `本报告的数字与文案可能与你当前的源码不符 —— <strong>请重启 DSH</strong> 后再生成。</aside>\n`
+    : ''
+
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -208,9 +233,9 @@ export function reportDocument(markdown, meta = {}) {
 </head>
 <body>
 <main>
-${markdownToHtml(markdown)}
+${staleHtml}${markdownToHtml(markdown)}
 </main>
-<footer>本报告由 dsh-agent-worklog 从 DSH 会话日志（只读）自动生成 · 生成时间 ${esc(gen)}${sid ? ` · 会话 ${esc(sid)}` : ''}</footer>
+<footer>本报告由 dsh-agent-log 从 DSH 会话日志（只读）自动生成 · 生成时间 ${esc(gen)}${sid ? ` · 会话 ${esc(sid)}` : ''}</footer>
 </body>
 </html>
 `

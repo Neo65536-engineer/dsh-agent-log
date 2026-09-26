@@ -23,6 +23,7 @@ import {
   sessionIdFromExec,
   buildReport,
   recentSessions,
+  reportDocument,
 } from '../index.js'
 import { renderReport } from '../core/render.mjs'
 import { stripAnsi, firstLines } from '../core/session-log.mjs'
@@ -73,7 +74,7 @@ async function getRes(url) {
 }
 
 // 挑一个真实存在的小会话做被试
-const list = await getJson('/plugins/dsh-agent-worklog/report?list=1')
+const list = await getJson('/plugins/dsh-agent-log/report?list=1')
 const sample = (list.json.sessions ?? []).find((s) => s.bytes < 200000) ?? list.json.sessions?.[0]
 if (!sample) {
   console.log('找不到任何会话，无法回归验证')
@@ -86,9 +87,25 @@ const fresh = moduleFreshness()
 check('moduleFreshness() 返回结构完整', typeof fresh.stale === 'boolean' && typeof fresh.loadedAt === 'number' && Array.isArray(fresh.newer),
   JSON.stringify(fresh))
 check('刚加载时不应判为陈旧', fresh.stale === false, JSON.stringify(fresh.newer))
-const r1 = await getJson(`/plugins/dsh-agent-worklog/report?format=json&sessionId=${sample.sessionId}`)
+const r1 = await getJson(`/plugins/dsh-agent-log/report?format=json&sessionId=${sample.sessionId}`)
 check('路由 payload 带 diagnostics.freshness', !!r1.json.diagnostics?.freshness,
   JSON.stringify(Object.keys(r1.json.diagnostics ?? {})))
+
+// 陈旧警告必须在**三条输出路径**上都能被看见 ——
+// 早先只有 markdown 有，于是"宿主跑旧代码"在 HTML/JSON 上完全静默
+// （实测踩过：改了包名后导出的 HTML 页脚仍是旧名，文档里却零提示）。
+console.log('\n=== 1b. 陈旧模块警告要覆盖 html / json / markdown 三条路径 ===')
+const staleMeta = { stale: true, loadedAt: Date.now() - 60000, newer: ['index.js', 'core/render.mjs'] }
+const staleDoc = reportDocument('# 标题\n\n正文', { sessionId: 'session-x', generatedAt: Date.now(), ...staleMeta })
+check('HTML 在陈旧时渲染出警告横幅', /<aside class="wl-stale">/.test(staleDoc), '未找到 .wl-stale 横幅元素')
+check('HTML 横幅里点名了更新的文件', staleDoc.includes('core/render.mjs'))
+check('HTML 横幅里给出"请重启 DSH"的处置', /请重启 DSH/.test(staleDoc))
+const cleanDoc = reportDocument('# 标题', { sessionId: 'session-x', generatedAt: Date.now(), stale: false })
+// 注意：CSS 里始终有 .wl-stale 规则，所以要断言的是"横幅元素"不存在，而不是类名不存在
+check('不陈旧时 HTML 没有横幅元素（不误报）', !/<aside class="wl-stale">/.test(cleanDoc))
+check('横幅样式在打印时也可读（有 print 规则）', /@media print\{\s*\n\s*\.wl-stale/.test(staleDoc))
+// markdown 路径的警告由 execute 拼接，这里断言同一句文案存在（避免两条路径说法漂移）
+check('markdown 的警告文案与 HTML 一致（都提到"请重启 DSH"）', /请重启 DSH/.test(staleDoc))
 
 // ---------------------------------------------------------------- 2. 参数校验
 console.log('\n=== 2. 参数自校验（DSH 不替我们拦 schema）===')
@@ -118,17 +135,17 @@ check('exec.agent.id 兜底', sessionIdFromExec({ agent: { id: 'S-B' } }) === 'S
 check('无 exec 时返回 null（不要猜）', sessionIdFromExec(undefined) === null)
 check('recentSessions() 可按 mtime 列出会话', (recentSessions(HOME, 5) ?? []).length > 0)
 
-const explicit = await getJson(`/plugins/dsh-agent-worklog/report?format=json&sessionId=${sample.sessionId}`)
+const explicit = await getJson(`/plugins/dsh-agent-log/report?format=json&sessionId=${sample.sessionId}`)
 check('显式 sessionId → resolvedBy=explicit', explicit.json.resolvedBy === 'explicit', String(explicit.json.resolvedBy))
 check('显式 sessionId 被正确采用', explicit.json.sessionId === sample.sessionId)
-const fallback = await getJson('/plugins/dsh-agent-worklog/report?format=json')
+const fallback = await getJson('/plugins/dsh-agent-log/report?format=json')
 check('未给 sessionId → resolvedBy=newest（并会被面板标注出来）', fallback.json.resolvedBy === 'newest', String(fallback.json.resolvedBy))
 check('路由 ?list=1 返回会话列表', Array.isArray(list.json.sessions) && list.json.sessions.length > 0,
   String((list.json.sessions ?? []).length))
 
 // ---------------------------------------------------------------- 3b. 可下载的报告文档
 console.log('\n=== 3b. 可下载的《本次 Agent 工作报告》（面板「下载」走这条路）===')
-const html = await getRes(`/plugins/dsh-agent-worklog/report?format=html&sessionId=${sample.sessionId}`)
+const html = await getRes(`/plugins/dsh-agent-log/report?format=html&sessionId=${sample.sessionId}`)
 check('format=html → 200 text/html', html.status === 200 && /text\/html/.test(String(html.ct)),
   `${html.status} ${html.ct}`)
 check('是自包含文档（doctype + 内联样式，无外部依赖）',
@@ -141,7 +158,7 @@ check('正文里没有漏网的行首 markdown 标记',
   !/^#{1,4} /m.test(bodyOnly) && !/^\|/m.test(bodyOnly) && !/^\s*[-*] /m.test(bodyOnly),
   '仍有未转换的 markdown 行')
 check('HTML 已被转义（无裸 < 逃逸标签）', !/<(?!\/?(h[1-4]|p|table|thead|tbody|tr|th|td|ul|li|blockquote|code|pre|strong|hr|br)\b)[a-z]/i.test(bodyOnly))
-const mdRes = await getRes(`/plugins/dsh-agent-worklog/report?format=markdown&sessionId=${sample.sessionId}`)
+const mdRes = await getRes(`/plugins/dsh-agent-log/report?format=markdown&sessionId=${sample.sessionId}`)
 check('format=markdown 仍可用', mdRes.status === 200 && String(mdRes.body).includes('# 本次 Agent 工作报告'))
 // 工具的 html 分支：写盘时必须是 HTML，且不能拼接 markdown 脚注
 const htmlOutName = `__worklog-html-check-${Date.now()}.html`
@@ -321,7 +338,7 @@ const shouldDetect = [
   // 报告于是对着自己的测试套件报「测试执行 0」——事实错误。
   ['node test/run-all.mjs', true],
   ['node test\\run-all.mjs', true],
-  ['cd "E:\\tools\\work\\plugins\\dsh-agent-worklog"; node test/run-all.mjs 2>&1 | Out-String -Width 200', true],
+  ['cd "E:\\tools\\work\\plugins\\dsh-agent-log"; node test/run-all.mjs 2>&1 | Out-String -Width 200', true],
   ['node tests/all.js', true],
   ['node src/foo.test.mjs', true],
 ]
@@ -350,8 +367,8 @@ const colored = '\u001b[38;2;140;140;140mFullName   Length\u001b[0m'
 check('stripAnsi 去掉 SGR 颜色码', stripAnsi(colored) === 'FullName   Length', JSON.stringify(stripAnsi(colored)))
 check('firstLines 不再夹带 ESC', !firstLines(colored, 2).includes('\u001b'), JSON.stringify(firstLines(colored, 2)))
 check('多行着色输出只留文字',
-  firstLines('\u001b[1mdsh-agent-worklog 安装器\u001b[0m\n插件目录 : E:\\x', 2) === 'dsh-agent-worklog 安装器 | 插件目录 : E:\\x',
-  JSON.stringify(firstLines('\u001b[1mdsh-agent-worklog 安装器\u001b[0m\n插件目录 : E:\\x', 2)))
+  firstLines('\u001b[1mdsh-agent-log 安装器\u001b[0m\n插件目录 : E:\\x', 2) === 'dsh-agent-log 安装器 | 插件目录 : E:\\x',
+  JSON.stringify(firstLines('\u001b[1mdsh-agent-log 安装器\u001b[0m\n插件目录 : E:\\x', 2)))
 check('按宽度截断也不会留下半截控制序列',
   !/\[\d/.test(firstLines('\u001b[38;2;140;140;140m' + 'x'.repeat(300), 1, 40)),
   JSON.stringify(firstLines('\u001b[38;2;140;140;140m' + 'x'.repeat(300), 1, 40)))

@@ -26,7 +26,7 @@ const val = (f, d = null) => {
 
 const HOME = process.env.DSH_HOME || 'E:\\tools\\dsh'
 const TOOL = 'work_report'
-const PLUGIN = 'dsh-agent-worklog'
+const PLUGIN = 'dsh-agent-log'
 
 const ok = (s) => console.log(`  \x1b[32m✓\x1b[0m ${s}`)
 const bad = (s, h) => {

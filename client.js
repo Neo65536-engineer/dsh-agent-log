@@ -1,5 +1,5 @@
 /**
- * dsh-agent-worklog —— 客户端（浏览器侧）插件。
+ * dsh-agent-log —— 客户端（浏览器侧）插件。
  *
  * 在右侧 Sidebar 里加一个「Agent 工作报告」页签。
  *
@@ -18,14 +18,14 @@
  */
 
 window.__ModuleLoader__.load({
-  id: 'dsh-agent-worklog',
+  id: 'dsh-agent-log',
   factory(require) {
     const React = require('react')
     const h = React.createElement
 
-    const ID = 'dsh-agent-worklog'
+    const ID = 'dsh-agent-log'
     const KIND = 'worklog'
-    const ROUTE = '/plugins/dsh-agent-worklog/report'
+    const ROUTE = '/plugins/dsh-agent-log/report'
 
     // ------------------------------------------------------------ 样式
     const CSS = `
@@ -113,7 +113,7 @@ window.__ModuleLoader__.load({
 `
 
     function StyleOnce() {
-      return h('style', { 'data-dsh-agent-worklog': '' }, CSS)
+      return h('style', { 'data-dsh-agent-log': '' }, CSS)
     }
 
     // ------------------------------------------------------------ 工具函数
@@ -721,7 +721,7 @@ window.__ModuleLoader__.load({
               },
             ],
           }),
-        'dsh-agent-worklog: tab type',
+        'dsh-agent-log: tab type',
       )
 
       ctx.effect(
@@ -729,7 +729,7 @@ window.__ModuleLoader__.load({
           ctx.slots.inject('sidebar.right.pane.tab', () =>
             ctx.slots.register({ name: 'sidebar.right.pane.tab', key: ID }, WorklogPanel),
           ),
-        'dsh-agent-worklog: tab body',
+        'dsh-agent-log: tab body',
       )
     }
 
