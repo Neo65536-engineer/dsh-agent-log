@@ -21,11 +21,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wingsky-1/dsh-agent-worklog.git"
+    "url": "git+https://github.com/Neo65536-engineer/dsh-agent-worklog.git"
   },
-  "homepage": "https://github.com/wingsky-1/dsh-agent-worklog#readme",
+  "homepage": "https://github.com/Neo65536-engineer/dsh-agent-worklog#readme",
   "bugs": {
-    "url": "https://github.com/wingsky-1/dsh-agent-worklog/issues"
+    "url": "https://github.com/Neo65536-engineer/dsh-agent-worklog/issues"
   },
   "publishConfig": {
     "access": "public"

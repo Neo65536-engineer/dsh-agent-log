@@ -7,16 +7,14 @@ Agent 工作记录 / 任务复盘 / 自动生成项目报告 —— DSH 插件�
 ## 安装（从 GitHub，交给 DSH 自己装）
 
 ```bash
-dsh plugin --profile web install <owner>/dsh-agent-worklog
+dsh plugin --profile web install Neo65536-engineer/dsh-agent-worklog
 ```
 
 装完重启 DSH（重跑 `dsh web` / 重开桌面版）即可。
 
-> ⚠️ **`<owner>` 必须换成真实的 GitHub 账号/组织名**，并且要和 `package.json` 里的
-> `repository.url`、`homepage`、`bugs` 三处一致。（本仓库提交前这三处填的是占位符。）
->
 > 这一行也是社区插件市场的**代执行通道**：市场会优先提取 README 里指向本仓库的
-> `dsh plugin install/add` 指令，弹确认后交给官方 CLI 执行。所以这个 target 必须写对。
+> `dsh plugin install/add` 指令，弹确认后交给官方 CLI 执行。所以这个 target 必须写对
+> —— 它要和 `package.json` 的 `repository.url` / `homepage` / `bugs` 三处保持一致。
 
 ### 披露（装之前你该知道的）
 
@@ -28,6 +26,90 @@ dsh plugin --profile web install <owner>/dsh-agent-worklog
 | 文件系统权限 | **只读** `$DSH_HOME/sessions`、`$DSH_HOME/storages/session_projcache` |
 | 会不会改我的东西 | 不改。**不写会话数据**；只有你显式传 `out` 时才往你指定的路径写报告 |
 | 数据保留 | 无（不建任何索引/缓存文件；只有进程内存里 12 份日志的 LRU 缓存） |
+
+## 依赖关系与版本兼容性
+
+### 一、包依赖：**零运行时依赖**
+
+```jsonc
+// package.json 里没有这些字段，是刻意的
+"dependencies":      // 不声明 —— 零运行时依赖
+"peerDependencies":  // 不声明 —— 见下面「为什么不声明 peerDependencies」
+"devDependencies":   // 不声明 —— 测试用到 DSH 校验器时走 node_modules 里的 junction
+```
+
+源码里**只 import Node 内建模块**（`node:fs` / `node:path` / `node:zlib` / `node:url` /
+`node:child_process` / `node:os`），**没有一处 `import`／`require` 任何 `@deepseek-ai/*` 包**。
+自证（只匹配真正的 import 语句，注释里提到包名不算）：
+
+```bash
+grep -rnE "^\s*(import .* from|.*require\()['\"]@deepseek-ai" index.js client.js core bin \
+  && echo "↑ 有命中就说明耦合了宿主包" || echo "✓ 零宿主包依赖"
+```
+
+因此：安装不需要 `npm install`，不需要构建，不需要联网，也不存在
+「旧版宿主包副本遮蔽宿主」那类事故（[STANDARD §6.6](https://github.com/bradeGithub/DSH-Plugins-Marketplace) 的经典坑）。
+
+### 二、它实际依赖的是**宿主契约**（而不是包）
+
+零包依赖不等于零耦合 —— 真正要盯的是下面这些**宿主接口**。DESKTOP 版与 Web 版都是同一套：
+
+| 方向 | 用到的契约 | 用在哪 |
+| --- | --- | --- |
+| 宿主 | `ctx.get('tools').register({ name, description, parameters, output, execute })` + `ctx.effect` | 注册 `work_report` 工具 |
+| 宿主 | `ctx.inject(['webServer'])` → `webServer.register({ kind: 'prefix', path, handler })` | 只读 HTTP 路由（**可选依赖**：headless profile 没有它时插件照常激活，只是不挂路由） |
+| 宿主 | `exec.agent.session.header.id` | 判定"当前是谁的会话"（拿不到时**不回退到"最近被改动的会话"**） |
+| 宿主 | Cordis 生命周期 `apply` / `inject` / `effect` / `ctx.logger` | 插件入口 |
+| 客户端 | `sidebarRightTabs.register(...)` + `slots.register('sidebar.right.pane.tab', ...)`，`inject: ['@deepseek-ai/dsh-client-ui-sidebar-right']` | 右侧边栏面板 |
+| 客户端 | `props.sessionId` | 面板绑定自己所属的会话 |
+| 数据 | 会话日志 `sessions/<ws>/<sid>/session[.vN].jsonl.zstd`（N 个 zstd 帧顺序拼接 + JSONL） | 全部数据的来源 |
+| 数据 | `storages/session_projcache/sessions/<sid>.json` 的 `tokenUsage.totals` / `sessionStats` | Token 与步数的权威值 |
+
+### 三、实测过的 DSH 版本
+
+| DSH | 形态 | 实测结论 |
+| --- | --- | --- |
+| **0.1.5-rc.3** | Web（`dsh web`，runner 安装） | 开发期全程在此版本；13 个测试文件全绿 |
+| **0.1.7-rc.1** | 桌面版（`dsh-plugin-desktop` 2.0.14 内置，app 内 154 个 `@deepseek-ai/*` 包） | 工具注册、路由、面板全部实测通过（右侧边栏「+」→「Agent 工作报告」） |
+| **0.1.7-rc.2** | Web（`dsh web`，2026-09-26 升级后） | 客户端 bundle 进入 application 批次并 200 加载；宿主路由返回真实数据 |
+
+也就是说：**同一个插件同时跑在 0.1.7-rc.1（桌面）与 0.1.7-rc.2（Web）上**，
+说明它没有把版本钉在某一个补丁上。
+
+### 四、升级 DSH 会不会影响使用？——**不会静默坏，但要盯三处**
+
+**为什么不会静默坏**：本插件不声明 `peerDependencies`，而 DSH 的版本门禁实现是
+`@deepseek-ai/dsh-app-boot` 的 `evaluatePluginCompatibility`：
+
+```js
+if (!Object.hasOwn(fields, 'peerDependencies')) return void 0;   // 没有该字段 → 直接放行
+```
+
+所以升级 DSH **不会**因为版本门禁把它拦下（反过来，声明了 `@deepseek-ai/dsh-*` 并把版本
+钉死的插件会被拒绝 —— 本机已有实例被拒）。
+
+**但有三种情况值得你知道**：
+
+1. **会话日志格式升级**（如 v3 → v4）。读者按魔数 `28 B5 2F FD` 逐帧切、按 `.vN` 取最高版本，
+   v0–v4 都兼容，未知版本会被跳过而不是崩。真出问题会在报告里表现为数字变少，而不是报错。
+2. **宿主接口改签名**（最可能需要跟的一次）。如果哪天 `tools.register` 或
+   `webServer.register` 换了契约，现象是**插件激活但工具/面板不出现**。
+   这正是「陈旧模块自检」要防的那类静默故障 —— 插件会自己报出来。
+3. **投影缓存路径/字段变动**。它只影响 Token 与步数这两个**权威值**，
+   报告里其余内容仍从会话日志算；缺失时会回落到日志累加值。
+
+**升级后自检（一条命令）**：
+
+```bash
+node bin/verify-loaded.mjs      # 读会话日志的 request/header，确认 work_report 真在工具列表里
+node bin/verify-compose.mjs     # 确认插件仍在组合树里（不依赖运行中的 DSH）
+```
+
+两条都过 → 升级没有影响；只有 `verify-compose` 过而 `verify-loaded` 不过 → 是宿主接口层的问题。
+
+> 本机同时存在**两个 DSH 运行时**：桌面版 `E:\tools\dsh-desktop\...\resources\app`
+> （app 2.0.14，内含 dsh 0.1.7-rc.1）与 runner `E:\tools\dsh\runner`（`dsh web` 用它，
+> 0.1.7-rc.2）。改插件后两者都要重启才生效，详见下文「这台机器上有两个 DSH 运行时」。
 
 ## 它回答什么
 
